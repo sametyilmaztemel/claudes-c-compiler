@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: build + unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build (release)
+        run: cargo build --release
+      - name: Unit tests (lib + bins)
+        run: cargo test --release --lib --bins
+
+  # Separate job so a doctest failure is reported as its own check.
+  doctest:
+    name: doctests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Doctests
+        run: cargo test --release --doc
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # No -D warnings: upstream has many pre-existing warnings.
+      # Deny-level lints still fail the job.
+      - name: Clippy
+        run: cargo clippy --release --all-targets
+
+  cross-smoke:
+    name: cross-target smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install cross toolchains and qemu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
+            gcc-i686-linux-gnu libc6-dev-i386-cross \
+            qemu-user
+      - name: Build (release)
+        run: cargo build --release
+      - name: Smoke test all targets
+        env:
+          SMOKE_REQUIRE_ALL: "1"
+        run: ci/smoke.sh target/release
+
+  attribution:
+    name: commit attribution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Upstream history keeps its own authors and is exempt from the check.
+      - name: Fetch upstream history
+        run: >
+          git fetch --no-tags
+          https://github.com/anthropics/claudes-c-compiler.git
+          +refs/heads/main:refs/remotes/upstream/main
+      - name: Check authorship of new commits
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            ci/check-attribution.sh "origin/${PR_BASE_REF}" "${PR_HEAD_SHA}" upstream/main
+          else
+            # A push is checked from the previous tip of the branch. A new
+            # branch or a manual run has none, so everything that is not
+            # upstream history is checked.
+            base="${PUSH_BEFORE:-}"
+            if [ -z "$base" ] || ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null; then
+              base=upstream/main
+            fi
+            ci/check-attribution.sh "$base" "${PUSH_AFTER}" upstream/main
+          fi
