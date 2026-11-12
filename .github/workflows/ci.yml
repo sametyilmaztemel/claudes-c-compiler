@@ -1,9 +1,12 @@
 name: CI
 
+# integration-next is the staging branch: a candidate (integration plus one
+# change) is pushed there first, and integration is only fast-forwarded to a
+# commit that passed this workflow on integration-next.
 on:
   pull_request:
   push:
-    branches: [integration]
+    branches: [integration, integration-next]
   workflow_dispatch:
 
 permissions:
