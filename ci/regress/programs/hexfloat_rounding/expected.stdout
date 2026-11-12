@@ -1,0 +1,10 @@
+tie, even below      3ff0000000000000 ok
+tie, even above      3ff0000000000002 ok
+above tie            3ff0000000000001 ok
+2^53 + 1.5           4340000000000001 ok
+2^63 + 1024 tie      43e0000000000000 ok
+2^63 + 3072 tie      43e0000000000002 ok
+2^63 - 1             43e0000000000000 ok
+54 bits, tie         3ffffffffffffffe ok
+tie carries up       4000000000000000 ok
+tie broken by tail   3fffffffffffffff ok
