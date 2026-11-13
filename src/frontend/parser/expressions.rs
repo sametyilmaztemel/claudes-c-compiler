@@ -54,7 +54,7 @@ impl Parser {
     /// this currently hardcodes 64-bit sizes. Only affects ext_vector_type (not vector_size).
     fn estimate_type_size(&self, ts: &TypeSpecifier) -> usize {
         match ts {
-            TypeSpecifier::Char | TypeSpecifier::UnsignedChar | TypeSpecifier::Bool => 1,
+            TypeSpecifier::Char | TypeSpecifier::SignedChar | TypeSpecifier::UnsignedChar | TypeSpecifier::Bool => 1,
             TypeSpecifier::Short | TypeSpecifier::UnsignedShort => 2,
             TypeSpecifier::Int | TypeSpecifier::UnsignedInt
             | TypeSpecifier::Signed | TypeSpecifier::Unsigned => 4,

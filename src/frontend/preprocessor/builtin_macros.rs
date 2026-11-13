@@ -40,6 +40,8 @@ fn define_limits_macros(macros: &mut MacroTable) {
     def(macros, "SCHAR_MIN", "(-128)");
     def(macros, "SCHAR_MAX", "127");
     def(macros, "UCHAR_MAX", "255");
+    // Signed-char defaults; Preprocessor::set_char_unsigned() overrides these two
+    // when plain char is unsigned (AArch64, RISC-V, -funsigned-char).
     def(macros, "CHAR_MIN", "(-128)");
     def(macros, "CHAR_MAX", "127");
 
@@ -399,9 +401,9 @@ fn define_type_traits_macros(macros: &mut MacroTable) {
     def(macros, "__ORDER_BIG_ENDIAN__", "4321");
     def(macros, "__ORDER_PDP_ENDIAN__", "3412");
 
-    // __CHAR_UNSIGNED__: NOT defined for x86/i686/riscv where char is signed.
-    // Only ARM defines char as unsigned by default. This is set per-target
-    // in predefined_macros.rs set_target().
+    // __CHAR_UNSIGNED__: NOT defined here. It is defined when plain char is
+    // unsigned (the default on AArch64 and RISC-V, or -funsigned-char) by
+    // Preprocessor::set_char_unsigned() in predefined_macros.rs.
     // __WCHAR_UNSIGNED__: wchar_t is signed on Linux (unlike Windows).
     // Do not define it (it would be detected as "defined" by #ifdef).
 

@@ -174,7 +174,8 @@ impl Lowerer {
         match ts {
             TypeSpecifier::Void => IrType::Void,
             TypeSpecifier::Bool => IrType::U8,
-            TypeSpecifier::Char => IrType::I8,
+            TypeSpecifier::Char => IrType::from_ctype(&CType::Char),
+            TypeSpecifier::SignedChar => IrType::I8,
             TypeSpecifier::UnsignedChar => IrType::U8,
             TypeSpecifier::Short => IrType::I16,
             TypeSpecifier::UnsignedShort => IrType::U16,
@@ -239,7 +240,7 @@ impl Lowerer {
         // On i686 (ILP32): long=4, pointer=4, double aligned to 4, long double=12 aligned to 4
         match ts {
             TypeSpecifier::Void | TypeSpecifier::Bool => Some((1, 1)),
-            TypeSpecifier::Char | TypeSpecifier::UnsignedChar => Some((1, 1)),
+            TypeSpecifier::Char | TypeSpecifier::SignedChar | TypeSpecifier::UnsignedChar => Some((1, 1)),
             TypeSpecifier::Short | TypeSpecifier::UnsignedShort => Some((2, 2)),
             TypeSpecifier::Int | TypeSpecifier::UnsignedInt
             | TypeSpecifier::Signed | TypeSpecifier::Unsigned => Some((4, 4)),
@@ -901,4 +902,85 @@ impl Lowerer {
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::Target;
+    use crate::common::types::{set_target_char_is_unsigned, AddressSpace};
+    use crate::ir::lowering::test_util::lower_source;
+    use crate::ir::module::GlobalInit;
+
+    /// Restores the default (signed) plain char when dropped.
+    struct PlainCharGuard;
+
+    impl PlainCharGuard {
+        fn set(unsigned: bool) -> Self {
+            set_target_char_is_unsigned(unsigned);
+            PlainCharGuard
+        }
+    }
+
+    impl Drop for PlainCharGuard {
+        fn drop(&mut self) {
+            set_target_char_is_unsigned(false);
+        }
+    }
+
+    #[test]
+    fn test_types_compatible_distinguishes_char_types() {
+        let chars = [CType::Char, CType::SChar, CType::UChar];
+        for (i, a) in chars.iter().enumerate() {
+            for (j, b) in chars.iter().enumerate() {
+                assert_eq!(Lowerer::ctypes_compatible(a, b), i == j, "{} vs {}", a, b);
+            }
+        }
+        let ptr = |t: CType| CType::Pointer(Box::new(t), AddressSpace::Default);
+        assert!(Lowerer::ctypes_compatible(&ptr(CType::Char), &ptr(CType::Char)));
+        assert!(!Lowerer::ctypes_compatible(&ptr(CType::Char), &ptr(CType::SChar)));
+    }
+
+    /// Scalar initializer of the global named `name`, as an i64.
+    fn scalar_init(module: &crate::ir::module::IrModule, name: &str) -> i64 {
+        let g = module.globals.iter().find(|g| g.name == name).expect("global");
+        match &g.init {
+            GlobalInit::Scalar(c) => c.to_i64().expect("integer constant"),
+            other => panic!("`{}` has initializer {:?}", name, other),
+        }
+    }
+
+    /// Initializer of the global named `name`, as a debug string.
+    fn init_text(module: &crate::ir::module::IrModule, name: &str) -> String {
+        let g = module.globals.iter().find(|g| g.name == name).expect("global");
+        format!("{:?}", g.init)
+    }
+
+    #[test]
+    fn test_plain_char_constants_lower_by_signedness() {
+        let src = "int a = (char)200;\n\
+                   int b = '\\xff';\n\
+                   int c = (signed char)200;\n\
+                   int d = (unsigned char)200;\n\
+                   char s[] = \"\\x80\";\n";
+        let signed = {
+            let _guard = PlainCharGuard::set(false);
+            lower_source(Target::Aarch64, src)
+        };
+        let unsigned = {
+            let _guard = PlainCharGuard::set(true);
+            lower_source(Target::Aarch64, src)
+        };
+        assert_eq!(scalar_init(&signed, "a"), -56);
+        assert_eq!(scalar_init(&signed, "b"), -1);
+        assert_eq!(scalar_init(&unsigned, "a"), 200);
+        assert_eq!(scalar_init(&unsigned, "b"), 255);
+        // signed char and unsigned char do not depend on plain char.
+        for m in [&signed, &unsigned] {
+            assert_eq!(scalar_init(m, "c"), -56);
+            assert_eq!(scalar_init(m, "d"), 200);
+        }
+        // String initializer bytes are the same either way.
+        assert_eq!(init_text(&signed, "s"), init_text(&unsigned, "s"));
+    }
 }

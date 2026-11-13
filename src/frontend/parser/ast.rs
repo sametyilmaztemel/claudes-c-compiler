@@ -480,7 +480,10 @@ pub enum Designator {
 #[derive(Debug, Clone)]
 pub enum TypeSpecifier {
     Void,
+    /// Plain `char`; its signedness is target_char_is_unsigned().
     Char,
+    /// `signed char`
+    SignedChar,
     Short,
     Int,
     Long,

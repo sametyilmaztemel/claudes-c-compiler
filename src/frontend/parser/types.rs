@@ -393,7 +393,7 @@ impl Parser {
     ) -> TypeSpecifier {
         let TypeSpecFlags {
             has_void, has_bool, has_float, has_double, has_complex,
-            has_char, has_short, has_int: _, has_unsigned, has_signed: _,
+            has_char, has_short, has_int: _, has_unsigned, has_signed,
             has_struct, has_union, has_enum, has_typeof, long_count,
             ref typedef_name,
         } = *flags;
@@ -425,7 +425,13 @@ impl Parser {
         } else if let Some(ref name) = typedef_name {
             TypeSpecifier::TypedefName(name.clone())
         } else if has_char {
-            if has_unsigned { TypeSpecifier::UnsignedChar } else { TypeSpecifier::Char }
+            if has_unsigned {
+                TypeSpecifier::UnsignedChar
+            } else if has_signed {
+                TypeSpecifier::SignedChar
+            } else {
+                TypeSpecifier::Char
+            }
         } else if has_short {
             if has_unsigned { TypeSpecifier::UnsignedShort } else { TypeSpecifier::Short }
         } else if long_count >= 2 {
@@ -1010,5 +1016,84 @@ impl Parser {
             result_type = TypeSpecifier::Array(Box::new(result_type), dim);
         }
         result_type
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::frontend::lexer::Lexer;
+    use crate::frontend::parser::ast::{ExternalDecl, TypeSpecifier};
+    use crate::frontend::parser::Parser;
+    use crate::common::types::set_target_char_is_unsigned;
+
+    /// Restores the default (signed) plain char when dropped.
+    struct PlainCharGuard;
+
+    impl PlainCharGuard {
+        fn set(unsigned: bool) -> Self {
+            set_target_char_is_unsigned(unsigned);
+            PlainCharGuard
+        }
+    }
+
+    impl Drop for PlainCharGuard {
+        fn drop(&mut self) {
+            set_target_char_is_unsigned(false);
+        }
+    }
+
+    /// Parse `source` and return the type specifier of each top-level declaration.
+    fn decl_type_specs(source: &str) -> Vec<TypeSpecifier> {
+        let tokens = Lexer::new(source, 0).tokenize();
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse();
+        assert_eq!(parser.error_count, 0, "test source does not parse");
+        ast.decls
+            .into_iter()
+            .map(|d| match d {
+                ExternalDecl::Declaration(decl) => decl.type_spec,
+                _ => panic!("expected a declaration"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_signed_char_specifiers_are_distinct() {
+        let specs = decl_type_specs(
+            "char a; signed char b; char signed c; unsigned char d; \
+             int q __attribute__((mode(QI)));",
+        );
+        assert_eq!(specs.len(), 5);
+        assert!(matches!(specs[0], TypeSpecifier::Char));
+        assert!(matches!(specs[1], TypeSpecifier::SignedChar));
+        assert!(matches!(specs[2], TypeSpecifier::SignedChar));
+        assert!(matches!(specs[3], TypeSpecifier::UnsignedChar));
+        assert!(matches!(specs[4], TypeSpecifier::SignedChar));
+    }
+
+    #[test]
+    fn test_mode_follows_signedness_of_the_base_type() {
+        // GCC picks the mode type from the signedness of the base type, and
+        // plain char counts as unsigned when the target's plain char is.
+        for char_unsigned in [false, true] {
+            let _guard = PlainCharGuard::set(char_unsigned);
+            let specs = decl_type_specs(
+                "char a __attribute__((mode(QI))); char b __attribute__((mode(HI))); \
+                 signed char c __attribute__((mode(QI))); unsigned char d __attribute__((mode(QI))); \
+                 unsigned e __attribute__((mode(QI))); int f __attribute__((mode(QI)));",
+            );
+            assert_eq!(specs.len(), 6);
+            if char_unsigned {
+                assert!(matches!(specs[0], TypeSpecifier::UnsignedChar));
+                assert!(matches!(specs[1], TypeSpecifier::UnsignedShort));
+            } else {
+                assert!(matches!(specs[0], TypeSpecifier::SignedChar));
+                assert!(matches!(specs[1], TypeSpecifier::Short));
+            }
+            assert!(matches!(specs[2], TypeSpecifier::SignedChar));
+            assert!(matches!(specs[3], TypeSpecifier::UnsignedChar));
+            assert!(matches!(specs[4], TypeSpecifier::UnsignedChar));
+            assert!(matches!(specs[5], TypeSpecifier::SignedChar));
+        }
     }
 }

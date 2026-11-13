@@ -569,6 +569,7 @@ impl<'a> ExprTypeChecker<'a> {
             TypeSpecifier::Void => CType::Void,
             TypeSpecifier::Bool => CType::Bool,
             TypeSpecifier::Char => CType::Char,
+            TypeSpecifier::SignedChar => CType::SChar,
             TypeSpecifier::UnsignedChar => CType::UChar,
             TypeSpecifier::Short => CType::Short,
             TypeSpecifier::UnsignedShort => CType::UShort,

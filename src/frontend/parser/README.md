@@ -373,7 +373,8 @@ concrete `TypeSpecifier` variant:
 | Flags | Result |
 |---|---|
 | `unsigned` + `long_count=2` | `UnsignedLongLong` |
-| `signed` + `char` | `Char` |
+| `char` | `Char` (plain `char`; its signedness is `target_char_is_unsigned()`) |
+| `signed` + `char` | `SignedChar` |
 | `long` + `double` | `LongDouble` |
 | `complex` + `float` | `ComplexFloat` |
 | `complex` + `double` | `ComplexDouble` |
@@ -397,7 +398,9 @@ The method also handles:
 - **`_Alignas(N)`** and **`_Alignas(type)`** -- C11 alignment specifiers.
 - **`__attribute__((mode(...)))`** -- GCC integer width override that
   transforms the base type to a specific bit-width (`QI`=8, `HI`=16, `SI`=32,
-  `DI`=64, `TI`=128) while preserving signedness.
+  `DI`=64, `TI`=128) while preserving signedness. Plain `char` counts as
+  unsigned when the target's plain char is, so `char` with `mode(QI)` is
+  `signed char` or `unsigned char`, never plain `char` (as in GCC).
 - **`__int128`** and **`__uint128_t`** -- 128-bit integer types (rejected on
   32-bit targets with a diagnostic).
 
@@ -611,7 +614,7 @@ Also carries alignment overrides, address space qualifiers (`__seg_gs`,
 
 A large enum covering all C type forms:
 
-- **Primitive types:** `Void`, `Char`, `Short`, `Int`, `Long`, `LongLong`,
+- **Primitive types:** `Void`, `Char` (plain `char`), `SignedChar`, `Short`, `Int`, `Long`, `LongLong`,
   `Float`, `Double`, `LongDouble`, `Signed`, `Unsigned`, `Bool`, `Int128`
 - **Unsigned variants:** `UnsignedChar` through `UnsignedInt128`
 - **Complex types:** `ComplexFloat`, `ComplexDouble`, `ComplexLongDouble`

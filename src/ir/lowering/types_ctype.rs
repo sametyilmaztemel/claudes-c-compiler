@@ -23,6 +23,7 @@ impl Lowerer {
             CType::Void => TypeSpecifier::Void,
             CType::Bool => TypeSpecifier::Bool,
             CType::Char => TypeSpecifier::Char,
+            CType::SChar => TypeSpecifier::SignedChar,
             CType::UChar => TypeSpecifier::UnsignedChar,
             CType::Short => TypeSpecifier::Short,
             CType::UShort => TypeSpecifier::UnsignedShort,
@@ -472,14 +473,14 @@ impl type_builder::TypeConvertContext for Lowerer {
             if let Some(et) = self.types.packed_enum_types.get(n) {
                 et.variants.iter().map(|(_, v)| *v).collect()
             } else {
-                return CType::Char; // packed enum with no known variants, default 1 byte
+                return CType::SChar; // packed enum with no known variants, default 1 byte
             }
         } else {
-            return CType::Char; // anonymous packed enum with no body
+            return CType::SChar; // anonymous packed enum with no body
         };
 
         if variant_values.is_empty() {
-            return CType::Char;
+            return CType::SChar;
         }
         let min_val = *variant_values.iter().min().unwrap();
         let max_val = *variant_values.iter().max().unwrap();
@@ -487,7 +488,7 @@ impl type_builder::TypeConvertContext for Lowerer {
             if max_val <= 0xFF { CType::UChar }
             else if max_val <= 0xFFFF { CType::UShort }
             else { CType::UInt }
-        } else if min_val >= -128 && max_val <= 127 { CType::Char }
+        } else if min_val >= -128 && max_val <= 127 { CType::SChar }
         else if min_val >= -32768 && max_val <= 32767 { CType::Short }
         else { CType::Int }
     }
