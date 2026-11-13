@@ -15,6 +15,11 @@ thread_local! {
     /// Whether long double is IEEE binary128 (f128). True for AArch64/RISC-V,
     /// false for x86/i686 where long double is x87 80-bit.
     static TARGET_LONG_DOUBLE_IS_F128: Cell<bool> = const { Cell::new(false) };
+    /// Whether plain `char` is unsigned. True by default on AArch64/RISC-V,
+    /// false on x86/i686; -funsigned-char and -fsigned-char override the default.
+    /// Defaults to false (signed), which is also what code that bypasses the
+    /// driver, such as unit tests, sees.
+    static TARGET_CHAR_IS_UNSIGNED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Set the target pointer size for the current thread (4 for i686/ILP32, 8 for LP64).
@@ -42,6 +47,18 @@ pub fn set_target_long_double_is_f128(is_f128: bool) {
 /// True for AArch64/RISC-V, false for x86/i686 (x87 80-bit).
 pub fn target_long_double_is_f128() -> bool {
     TARGET_LONG_DOUBLE_IS_F128.with(|c| c.get())
+}
+
+/// Set whether plain `char` is unsigned for the current thread.
+pub fn set_target_char_is_unsigned(is_unsigned: bool) {
+    TARGET_CHAR_IS_UNSIGNED.with(|c| c.set(is_unsigned));
+}
+
+/// Whether plain `char` is unsigned (C11 6.2.5p15: implementation-defined).
+/// This is the one place that decides it; `CType::Char` and the IR type of a
+/// plain char follow it. `signed char` and `unsigned char` never do.
+pub fn target_char_is_unsigned() -> bool {
+    TARGET_CHAR_IS_UNSIGNED.with(|c| c.get())
 }
 
 /// Return the IR type used for pointer-width integers (I64 on LP64, I32 on ILP32).
@@ -178,7 +195,11 @@ pub enum AddressSpace {
 pub enum CType {
     Void,
     Bool,
+    /// Plain `char`: a type distinct from `SChar` and `UChar`. Its signedness is
+    /// target_char_is_unsigned().
     Char,
+    /// `signed char`: always signed.
+    SChar,
     UChar,
     Short,
     UShort,
@@ -577,7 +598,7 @@ impl StructLayout {
     fn smallest_int_ctype_for_bytes(needed_bytes: usize, is_signed: bool) -> CType {
         if is_signed {
             match needed_bytes {
-                0..=1 => CType::Char,
+                0..=1 => CType::SChar,
                 2 => CType::Short,
                 3..=4 => CType::Int,
                 _ => CType::LongLong,
@@ -1192,6 +1213,7 @@ impl std::fmt::Display for CType {
             CType::Void => write!(f, "void"),
             CType::Bool => write!(f, "_Bool"),
             CType::Char => write!(f, "char"),
+            CType::SChar => write!(f, "signed char"),
             CType::UChar => write!(f, "unsigned char"),
             CType::Short => write!(f, "short"),
             CType::UShort => write!(f, "unsigned short"),
@@ -1302,7 +1324,7 @@ impl CType {
         let ptr_sz = target_ptr_size();
         match self {
             CType::Void => 0,
-            CType::Bool | CType::Char | CType::UChar => 1,
+            CType::Bool | CType::Char | CType::SChar | CType::UChar => 1,
             CType::Short | CType::UShort => 2,
             CType::Int | CType::UInt => 4,
             // ILP32: long = 4 bytes; LP64: long = 8 bytes
@@ -1336,7 +1358,7 @@ impl CType {
         let ptr_sz = target_ptr_size();
         match self {
             CType::Void => 1,
-            CType::Bool | CType::Char | CType::UChar => 1,
+            CType::Bool | CType::Char | CType::SChar | CType::UChar => 1,
             CType::Short | CType::UShort => 2,
             CType::Int | CType::UInt => 4,
             // ILP32: long aligned to 4; LP64: long aligned to 8
@@ -1397,14 +1419,17 @@ impl CType {
 
 
     pub fn is_integer(&self) -> bool {
-        matches!(self, CType::Bool | CType::Char | CType::UChar | CType::Short | CType::UShort |
+        matches!(self, CType::Bool | CType::Char | CType::SChar | CType::UChar | CType::Short | CType::UShort |
                        CType::Int | CType::UInt | CType::Long | CType::ULong |
                        CType::LongLong | CType::ULongLong |
                        CType::Int128 | CType::UInt128 | CType::Enum(_))
     }
 
     pub fn is_signed(&self) -> bool {
-        matches!(self, CType::Char | CType::Short | CType::Int | CType::Long | CType::LongLong | CType::Int128)
+        match self {
+            CType::Char => !target_char_is_unsigned(),
+            _ => matches!(self, CType::SChar | CType::Short | CType::Int | CType::Long | CType::LongLong | CType::Int128),
+        }
     }
 
     /// Whether this is a complex type (_Complex float/double/long double).
@@ -1449,7 +1474,7 @@ impl CType {
     /// Short/UShort all fit in int).
     pub fn integer_promoted(&self) -> CType {
         match self {
-            CType::Bool | CType::Char | CType::UChar
+            CType::Bool | CType::Char | CType::SChar | CType::UChar
             | CType::Short | CType::UShort => CType::Int,
             other => other.clone(),
         }
@@ -1469,8 +1494,11 @@ impl CType {
     /// Whether this is an unsigned integer type.
     /// Used by usual arithmetic conversions (C11 6.3.1.8).
     pub fn is_unsigned(&self) -> bool {
-        matches!(self, CType::Bool | CType::UChar | CType::UShort | CType::UInt
-            | CType::ULong | CType::ULongLong | CType::UInt128)
+        match self {
+            CType::Char => target_char_is_unsigned(),
+            _ => matches!(self, CType::Bool | CType::UChar | CType::UShort | CType::UInt
+                | CType::ULong | CType::ULongLong | CType::UInt128),
+        }
     }
 
     /// Integer conversion rank for C types (C11 6.3.1.1).
@@ -1478,7 +1506,7 @@ impl CType {
     pub fn integer_rank(&self) -> u32 {
         match self {
             CType::Bool => 0,
-            CType::Char | CType::UChar => 1,
+            CType::Char | CType::SChar | CType::UChar => 1,
             CType::Short | CType::UShort => 2,
             CType::Int | CType::UInt => 3,
             CType::Enum(e) => {
@@ -1838,7 +1866,8 @@ impl IrType {
         match ct {
             CType::Void => IrType::Void,
             CType::Bool => IrType::U8,
-            CType::Char => IrType::I8,
+            CType::Char => if target_char_is_unsigned() { IrType::U8 } else { IrType::I8 },
+            CType::SChar => IrType::I8,
             CType::UChar => IrType::U8,
             CType::Short => IrType::I16,
             CType::UShort => IrType::U16,
@@ -1885,6 +1914,95 @@ impl IrType {
             CType::Struct(_) | CType::Union(_) => IrType::Ptr,
             // Vectors are treated as aggregate types (pointer to stack slot)
             CType::Vector(_, _) => IrType::Ptr,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Restores the default (signed) plain char when dropped, so a test that
+    /// switches the thread-local cannot affect later tests on the same thread.
+    struct PlainCharGuard;
+
+    impl PlainCharGuard {
+        fn set(unsigned: bool) -> Self {
+            set_target_char_is_unsigned(unsigned);
+            PlainCharGuard
+        }
+    }
+
+    impl Drop for PlainCharGuard {
+        fn drop(&mut self) {
+            set_target_char_is_unsigned(false);
+        }
+    }
+
+    #[test]
+    fn test_schar_is_distinct_from_char_and_uchar() {
+        assert_ne!(CType::SChar, CType::Char);
+        assert_ne!(CType::SChar, CType::UChar);
+        assert_ne!(CType::Char, CType::UChar);
+        assert_eq!(CType::Char.to_string(), "char");
+        assert_eq!(CType::SChar.to_string(), "signed char");
+        assert_eq!(CType::UChar.to_string(), "unsigned char");
+    }
+
+    #[test]
+    fn test_schar_is_a_signed_byte() {
+        let _guard = PlainCharGuard::set(true);
+        assert_eq!(CType::SChar.size(), 1);
+        assert!(CType::SChar.is_integer());
+        assert!(CType::SChar.is_signed());
+        assert!(!CType::SChar.is_unsigned());
+        assert_eq!(CType::SChar.integer_rank(), CType::Char.integer_rank());
+        assert_eq!(CType::SChar.integer_promoted(), CType::Int);
+        assert_eq!(IrType::from_ctype(&CType::SChar), IrType::I8);
+    }
+
+    #[test]
+    fn test_signed_byte_storage_is_schar() {
+        assert_eq!(StructLayout::smallest_int_ctype_for_bytes(1, true), CType::SChar);
+        assert_eq!(StructLayout::smallest_int_ctype_for_bytes(1, false), CType::UChar);
+    }
+
+    #[test]
+    fn test_plain_char_is_signed_by_default() {
+        // A fresh thread sees the thread-local's initial value.
+        let default_unsigned = std::thread::spawn(target_char_is_unsigned).join().unwrap();
+        assert!(!default_unsigned);
+        assert!(CType::Char.is_signed());
+        assert!(!CType::Char.is_unsigned());
+        assert_eq!(IrType::from_ctype(&CType::Char), IrType::I8);
+    }
+
+    #[test]
+    fn test_plain_char_follows_target_char_is_unsigned() {
+        {
+            let _guard = PlainCharGuard::set(true);
+            assert!(target_char_is_unsigned());
+            assert!(!CType::Char.is_signed());
+            assert!(CType::Char.is_unsigned());
+            assert_eq!(IrType::from_ctype(&CType::Char), IrType::U8);
+            assert_eq!(CType::Char.size(), 1);
+            assert_eq!(CType::Char.integer_promoted(), CType::Int);
+        }
+        assert!(!target_char_is_unsigned());
+        assert!(CType::Char.is_signed());
+        assert_eq!(IrType::from_ctype(&CType::Char), IrType::I8);
+    }
+
+    #[test]
+    fn test_schar_and_uchar_ignore_plain_char_signedness() {
+        for unsigned in [false, true] {
+            let _guard = PlainCharGuard::set(unsigned);
+            assert!(CType::SChar.is_signed());
+            assert!(!CType::SChar.is_unsigned());
+            assert_eq!(IrType::from_ctype(&CType::SChar), IrType::I8);
+            assert!(!CType::UChar.is_signed());
+            assert!(CType::UChar.is_unsigned());
+            assert_eq!(IrType::from_ctype(&CType::UChar), IrType::U8);
         }
     }
 }

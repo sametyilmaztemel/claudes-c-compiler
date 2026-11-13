@@ -556,6 +556,9 @@ impl Driver {
                 "-fno-function-sections" => self.function_sections = false,
                 "-fdata-sections" => self.data_sections = true,
                 "-fno-data-sections" => self.data_sections = false,
+                // Plain char signedness; as in GCC the last of these wins.
+                "-funsigned-char" | "-fno-signed-char" => self.char_unsigned_flag = Some(true),
+                "-fsigned-char" | "-fno-unsigned-char" => self.char_unsigned_flag = Some(false),
                 "-fcommon" => self.fcommon = true,
                 "-fno-common" => self.fcommon = false,
                 "-fgnu89-inline" => self.gnu89_inline = true,

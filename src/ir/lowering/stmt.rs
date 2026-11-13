@@ -736,7 +736,7 @@ impl Lowerer {
                     } else if let CType::Array(ref elem_ty, Some(arr_size)) = field.ty {
                         // Char array field initialized by a string literal:
                         // copy the string bytes instead of storing the pointer.
-                        let is_char_array = matches!(**elem_ty, CType::Char | CType::UChar);
+                        let is_char_array = matches!(**elem_ty, CType::Char | CType::SChar | CType::UChar);
                         if is_char_array {
                             if let Expr::StringLiteral(ref s, _) = e {
                                 self.emit_string_to_alloca(base, s, field_offset, arr_size);
@@ -844,7 +844,7 @@ impl Lowerer {
             CType::Array(ref elem_ty, arr_size_opt) => {
                 // Check for char array initialized by a brace-wrapped string literal:
                 // e.g., struct field `char a[10]` initialized as `{"hello"}`
-                let is_char_array = matches!(**elem_ty, CType::Char | CType::UChar);
+                let is_char_array = matches!(**elem_ty, CType::Char | CType::SChar | CType::UChar);
                 if is_char_array && items.len() == 1 {
                     if let Initializer::Expr(Expr::StringLiteral(ref s, _)) = items[0].init {
                         let max_bytes = match arr_size_opt {

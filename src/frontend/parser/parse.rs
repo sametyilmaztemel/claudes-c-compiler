@@ -30,14 +30,15 @@ pub(super) enum ModeKind {
 
 impl ModeKind {
     /// Apply mode to a type specifier, preserving signedness.
+    /// Plain `char` is unsigned when the target's plain char is (as in GCC).
     pub(super) fn apply(self, ts: TypeSpecifier) -> TypeSpecifier {
         let is_unsigned = matches!(ts,
             TypeSpecifier::UnsignedInt | TypeSpecifier::UnsignedLong
             | TypeSpecifier::UnsignedLongLong | TypeSpecifier::Unsigned
             | TypeSpecifier::UnsignedChar | TypeSpecifier::UnsignedShort
-        );
+        ) || (matches!(ts, TypeSpecifier::Char) && crate::common::types::target_char_is_unsigned());
         match self {
-            ModeKind::QI => if is_unsigned { TypeSpecifier::UnsignedChar } else { TypeSpecifier::Char },
+            ModeKind::QI => if is_unsigned { TypeSpecifier::UnsignedChar } else { TypeSpecifier::SignedChar },
             ModeKind::HI => if is_unsigned { TypeSpecifier::UnsignedShort } else { TypeSpecifier::Short },
             ModeKind::SI => if is_unsigned { TypeSpecifier::UnsignedInt } else { TypeSpecifier::Int },
             ModeKind::DI => if is_unsigned { TypeSpecifier::UnsignedLongLong } else { TypeSpecifier::LongLong },
@@ -1178,7 +1179,7 @@ impl Parser {
         let ptr_sz = target_ptr_size();
         match ts {
             TypeSpecifier::Void | TypeSpecifier::Bool
-            | TypeSpecifier::Char | TypeSpecifier::UnsignedChar => Some(1),
+            | TypeSpecifier::Char | TypeSpecifier::SignedChar | TypeSpecifier::UnsignedChar => Some(1),
             TypeSpecifier::Short | TypeSpecifier::UnsignedShort => Some(2),
             TypeSpecifier::Int | TypeSpecifier::UnsignedInt
             | TypeSpecifier::Signed | TypeSpecifier::Unsigned
@@ -1207,6 +1208,9 @@ impl Parser {
     /// Check if a type specifier is an unsigned type.
     /// Used by the parser-level constant evaluator for cast truncation.
     pub(super) fn is_unsigned_type_spec(ts: &TypeSpecifier) -> bool {
+        if matches!(ts, TypeSpecifier::Char) {
+            return crate::common::types::target_char_is_unsigned();
+        }
         matches!(ts,
             TypeSpecifier::UnsignedChar
             | TypeSpecifier::UnsignedShort
@@ -1233,7 +1237,7 @@ impl Parser {
         let ptr_sz = target_ptr_size();
         match ts {
             TypeSpecifier::Void | TypeSpecifier::Bool
-            | TypeSpecifier::Char | TypeSpecifier::UnsignedChar => 1,
+            | TypeSpecifier::Char | TypeSpecifier::SignedChar | TypeSpecifier::UnsignedChar => 1,
             TypeSpecifier::Short | TypeSpecifier::UnsignedShort => 2,
             TypeSpecifier::Int | TypeSpecifier::UnsignedInt
             | TypeSpecifier::Signed | TypeSpecifier::Unsigned
@@ -1303,6 +1307,32 @@ impl Parser {
             TypeSpecifier::ComplexDouble => 8,
             TypeSpecifier::Array(elem, _) => Self::preferred_alignof_type_spec(elem, tag_aligns),
             _ => Self::alignof_type_spec(ts, tag_aligns),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::types::set_target_char_is_unsigned;
+
+    #[test]
+    fn test_is_unsigned_type_spec_follows_plain_char() {
+        /// Restores the default (signed) plain char when dropped.
+        struct PlainCharGuard;
+        impl Drop for PlainCharGuard {
+            fn drop(&mut self) {
+                set_target_char_is_unsigned(false);
+            }
+        }
+        let _guard = PlainCharGuard;
+        let is_unsigned = Parser::is_unsigned_type_spec;
+        for unsigned in [false, true] {
+            set_target_char_is_unsigned(unsigned);
+            assert_eq!(is_unsigned(&TypeSpecifier::Char), unsigned);
+            assert!(!is_unsigned(&TypeSpecifier::SignedChar));
+            assert!(is_unsigned(&TypeSpecifier::UnsignedChar));
+            assert!(!is_unsigned(&TypeSpecifier::Int));
         }
     }
 }

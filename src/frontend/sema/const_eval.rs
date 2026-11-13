@@ -18,7 +18,7 @@
 //! - Pointer arithmetic on global addresses
 //!   These remain in the lowerer since they require IR-level state.
 
-use crate::common::types::CType;
+use crate::common::types::{CType, target_char_is_unsigned};
 use crate::common::types::AddressSpace;
 use crate::common::const_arith;
 use crate::common::const_eval as shared_const_eval;
@@ -506,7 +506,7 @@ impl<'a> SemaConstEval<'a> {
     /// Note: This loses signedness info -- IrConst::I64 always maps to signed Long.
     fn ctype_from_ir_const(c: &IrConst) -> Option<CType> {
         match c {
-            IrConst::I8(_) => Some(CType::Char),
+            IrConst::I8(_) => Some(CType::SChar),
             IrConst::I16(_) => Some(CType::Short),
             IrConst::I32(_) => Some(CType::Int),
             IrConst::I64(_) => Some(CType::Long),
@@ -573,7 +573,8 @@ impl<'a> SemaConstEval<'a> {
             CType::Float => IrConst::F32(fv as f32),
             CType::Double => IrConst::F64(fv),
             CType::LongDouble => IrConst::long_double_with_bytes(fv, *bytes),
-            CType::Char => IrConst::I8(f128_bytes_to_i64(bytes)? as i8),
+            CType::Char if target_char_is_unsigned() => IrConst::I32(f128_bytes_to_u64(bytes)? as u8 as i32),
+            CType::Char | CType::SChar => IrConst::I8(f128_bytes_to_i64(bytes)? as i8),
             CType::UChar => IrConst::I32(f128_bytes_to_u64(bytes)? as u8 as i32),
             CType::Short => IrConst::I16(f128_bytes_to_i64(bytes)? as i16),
             CType::UShort => IrConst::I32(f128_bytes_to_u64(bytes)? as u16 as i32),
@@ -594,7 +595,8 @@ impl<'a> SemaConstEval<'a> {
             CType::Float => IrConst::F32(fv as f32),
             CType::Double => IrConst::F64(fv),
             CType::LongDouble => IrConst::long_double(fv),
-            CType::Char => IrConst::I8(fv as i8),
+            CType::Char if target_char_is_unsigned() => IrConst::I32(fv as u8 as i32),
+            CType::Char | CType::SChar => IrConst::I8(fv as i8),
             CType::UChar => IrConst::I32(fv as u8 as i32),
             CType::Short => IrConst::I16(fv as i16),
             CType::UShort => IrConst::I32(fv as u16 as i32),
@@ -792,7 +794,7 @@ impl<'a> SemaConstEval<'a> {
         let ptr_sz = target_ptr_size();
         match spec {
             TypeSpecifier::Void => Some(0),
-            TypeSpecifier::Char | TypeSpecifier::UnsignedChar => Some(1),
+            TypeSpecifier::Char | TypeSpecifier::SignedChar | TypeSpecifier::UnsignedChar => Some(1),
             TypeSpecifier::Short | TypeSpecifier::UnsignedShort => Some(2),
             TypeSpecifier::Int | TypeSpecifier::UnsignedInt
             | TypeSpecifier::Signed | TypeSpecifier::Unsigned => Some(4),
@@ -923,7 +925,7 @@ impl<'a> SemaConstEval<'a> {
         let ptr_sz = target_ptr_size();
         match spec {
             TypeSpecifier::Void | TypeSpecifier::Bool => 1,
-            TypeSpecifier::Char | TypeSpecifier::UnsignedChar => 1,
+            TypeSpecifier::Char | TypeSpecifier::SignedChar | TypeSpecifier::UnsignedChar => 1,
             TypeSpecifier::Short | TypeSpecifier::UnsignedShort => 2,
             TypeSpecifier::Int | TypeSpecifier::UnsignedInt
             | TypeSpecifier::Signed | TypeSpecifier::Unsigned => 4,
@@ -1102,6 +1104,7 @@ fn ctype_from_type_spec(spec: &TypeSpecifier, types: &TypeContext) -> CType {
         TypeSpecifier::Void => CType::Void,
         TypeSpecifier::Bool => CType::Bool,
         TypeSpecifier::Char => CType::Char,
+        TypeSpecifier::SignedChar => CType::SChar,
         TypeSpecifier::UnsignedChar => CType::UChar,
         TypeSpecifier::Short => CType::Short,
         TypeSpecifier::UnsignedShort => CType::UShort,

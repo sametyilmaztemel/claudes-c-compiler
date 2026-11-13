@@ -104,6 +104,7 @@ and a no-op).
 | `undef_all` | `bool` | `false` | `-undef` (suppress all predefined macros) |
 | `gnu_extensions` | `bool` | `true` | GNU C extensions enabled (false with `-std=c99` etc.) |
 | `gnu89_inline` | `bool` | `false` | GNU89 inline semantics (`-fgnu89-inline` or `-std=gnu89`) |
+| `char_unsigned_flag` | `Option<bool>` | `None` | `-funsigned-char`/`-fno-signed-char` (`Some(true)`), `-fsigned-char`/`-fno-unsigned-char` (`Some(false)`); the last one wins, `None` uses the target default |
 | `nostdinc` | `bool` | `false` | `-nostdinc` (no default system include paths) |
 | `suppress_line_markers` | `bool` | `false` | `-P` (strip `# line "file"` from `-E` output) |
 | `dump_defines` | `bool` | `false` | `-dM` (dump all `#define`s instead of preprocessed text) |
@@ -184,7 +185,8 @@ argument. No external parser library is used. The design priorities are:
 
 1. **GCC compatibility.** Build systems (Linux kernel, Meson, autoconf) pass a
    wide variety of GCC flags. The parser accepts all of them, silently ignoring
-   unknown `-f` and `-m` flags to match GCC's behavior.
+   unknown `-f` and `-m` flags to match GCC's behavior. The plain-char flags
+   (`-funsigned-char`, `-fsigned-char` and their `-fno-` forms) are honored.
 
 2. **Positional ordering.** Linker items (`-l`, `-Wl,`, object files) are
    collected into `linker_ordered_items` preserving their command-line order.
@@ -621,11 +623,17 @@ C files like Bison parsers). The worker thread:
 Panics from the worker thread are caught and printed as "internal error"
 messages to avoid silent failures.
 
-The `run()` method sets two thread-local configuration values before
+The `run()` method sets three thread-local configuration values before
 dispatching:
 - `set_target_ptr_size()`: pointer size (4 for i686, 8 for 64-bit targets)
 - `set_target_long_double_is_f128()`: `true` for AArch64/RISC-V (IEEE binary128),
   `false` for x86/i686 (x87 80-bit)
+- `set_target_char_is_unsigned()`: whether plain `char` is unsigned, from
+  `Target::plain_char_is_unsigned()` (unsigned by default on AArch64/RISC-V,
+  signed on x86-64/i686, overridden by `-funsigned-char`/`-fsigned-char`).
+  `configure_preprocessor` passes the same value to
+  `Preprocessor::set_char_unsigned()`, so `__CHAR_UNSIGNED__`, `CHAR_MIN` and
+  `CHAR_MAX` agree with the generated code.
 
 These are used throughout the type system for `sizeof`, alignment, and ABI
 computations.

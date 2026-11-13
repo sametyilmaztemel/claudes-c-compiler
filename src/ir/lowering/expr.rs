@@ -121,10 +121,8 @@ impl Lowerer {
             Expr::FloatLiteralF32(val, _) => Operand::Const(IrConst::F32(*val as f32)),
             Expr::FloatLiteralLongDouble(val, bytes, _) => Operand::Const(IrConst::long_double_with_bytes(*val, *bytes)),
             Expr::CharLiteral(ch, _) => {
-                // Sign-extend from signed char to int, matching GCC behavior.
-                // '\xEF' should be -17, not 239, when char is signed.
-                let val = *ch as u8 as i8 as i32;
-                Operand::Const(IrConst::I32(val))
+                // (int)(char)c: sign- or zero-extended according to plain char.
+                Operand::Const(IrConst::I32(crate::common::const_eval::char_literal_value(*ch)))
             }
 
             // Imaginary literals
@@ -397,7 +395,8 @@ impl Lowerer {
     /// Infer the C semantic type of an expression for arithmetic conversions.
     ///
     /// This differs from `get_expr_type` in that it returns the C-level type
-    /// (e.g., IntLiteral → I32 if it fits, CharLiteral → I8, comparisons → I32)
+    /// (e.g., IntLiteral → I32 if it fits, CharLiteral → I8 or U8 depending on
+    /// whether plain char is unsigned, comparisons → I32)
     /// whereas `get_expr_type` returns the IR storage type (literals → I64,
     /// comparisons → I64). Use this for binary operation type selection and
     /// arithmetic promotion decisions.
@@ -430,7 +429,9 @@ impl Lowerer {
             // long long is always 64-bit, regardless of target
             Expr::LongLongLiteral(_, _) => IrType::I64,
             Expr::ULongLongLiteral(_, _) => IrType::U64,
-            Expr::CharLiteral(_, _) => IrType::I8,
+            // Plain char, so that the type agrees with the value above: an I8-typed
+            // 255 would be sign-extended back to -1.
+            Expr::CharLiteral(_, _) => IrType::from_ctype(&CType::Char),
             // Comparisons and logical ops produce C int (I32), not I64
             Expr::BinaryOp(op, lhs, rhs, _) => {
                 if op.is_comparison() || matches!(op, BinOp::LogicalAnd | BinOp::LogicalOr) {

@@ -23,6 +23,18 @@ use crate::frontend::parser::ast::{BinOp, Expr};
 use super::const_arith;
 use super::types::target_is_32bit;
 
+/// Value of a single-byte character constant: (int)(char)c (C11 6.4.4.4p10).
+/// It is sign-extended when plain char is signed ('\xEF' is -17 on x86) and
+/// zero-extended when plain char is unsigned ('\xEF' is 239 on AArch64 and RISC-V,
+/// or with -funsigned-char), matching GCC.
+pub fn char_literal_value(ch: char) -> i32 {
+    if crate::common::types::target_char_is_unsigned() {
+        ch as u8 as i32
+    } else {
+        ch as u8 as i8 as i32
+    }
+}
+
 /// Evaluate a literal expression to an IrConst.
 /// Returns None for non-literal expressions.
 #[inline]
@@ -42,11 +54,7 @@ pub fn eval_literal(expr: &Expr) -> Option<IrConst> {
         Expr::UIntLiteral(val, _) => Some(IrConst::I64(*val as i64)),
         Expr::ULongLiteral(val, _) => Some(IrConst::I64(*val as i64)),
         Expr::ULongLongLiteral(val, _) => Some(IrConst::I64(*val as i64)),
-        Expr::CharLiteral(ch, _) => {
-            // Sign-extend from signed char to int, matching GCC behavior.
-            // '\xEF' should be -17, not 239, when char is signed.
-            Some(IrConst::I32(*ch as u8 as i8 as i32))
-        }
+        Expr::CharLiteral(ch, _) => Some(IrConst::I32(char_literal_value(*ch))),
         Expr::FloatLiteral(val, _) => Some(IrConst::F64(*val)),
         Expr::FloatLiteralF32(val, _) => Some(IrConst::F32(*val as f32)),
         Expr::FloatLiteralLongDouble(val, bytes, _) => {
@@ -344,3 +352,53 @@ pub fn eval_binop_with_types(
     const_arith::eval_const_binop(op, lhs, rhs, is_32bit, is_unsigned, lhs_unsigned, rhs_unsigned)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::source::Span;
+    use crate::common::types::set_target_char_is_unsigned;
+
+    /// Restores the default (signed) plain char when dropped.
+    struct PlainCharGuard;
+
+    impl PlainCharGuard {
+        fn set(unsigned: bool) -> Self {
+            set_target_char_is_unsigned(unsigned);
+            PlainCharGuard
+        }
+    }
+
+    impl Drop for PlainCharGuard {
+        fn drop(&mut self) {
+            set_target_char_is_unsigned(false);
+        }
+    }
+
+    #[test]
+    fn test_char_literal_value_follows_plain_char() {
+        let cases = [('\u{ff}', -1, 255), ('\u{80}', -128, 128), ('\u{7f}', 127, 127), ('A', 65, 65)];
+        for (ch, signed, unsigned) in cases {
+            {
+                let _guard = PlainCharGuard::set(false);
+                assert_eq!(char_literal_value(ch), signed, "signed char, {:?}", ch);
+            }
+            {
+                let _guard = PlainCharGuard::set(true);
+                assert_eq!(char_literal_value(ch), unsigned, "unsigned char, {:?}", ch);
+            }
+        }
+    }
+
+    #[test]
+    fn test_eval_literal_char_constant() {
+        let expr = Expr::CharLiteral('\u{ef}', Span::dummy());
+        {
+            let _guard = PlainCharGuard::set(false);
+            assert!(matches!(eval_literal(&expr), Some(IrConst::I32(-17))));
+        }
+        {
+            let _guard = PlainCharGuard::set(true);
+            assert!(matches!(eval_literal(&expr), Some(IrConst::I32(239))));
+        }
+    }
+}

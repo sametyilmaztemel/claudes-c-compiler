@@ -46,6 +46,9 @@ pub(crate) struct CliDefine {
 /// Use `has_input_files()` to check if input was provided before calling `run()`.
 pub struct Driver {
     pub(super) target: Target,
+    /// -funsigned-char (`Some(true)`) or -fsigned-char (`Some(false)`); the last
+    /// one on the command line wins. `None` means the target default applies.
+    pub(super) char_unsigned_flag: Option<bool>,
     pub(super) output_path: String,
     pub(super) output_path_set: bool,
     pub(super) input_files: Vec<String>,
@@ -241,6 +244,7 @@ impl Driver {
     pub fn new() -> Self {
         Self {
             target: Target::X86_64,
+            char_unsigned_flag: None,
             output_path: "a.out".to_string(),
             output_path_set: false,
             input_files: Vec::new(),
@@ -323,6 +327,7 @@ impl Driver {
         crate::common::types::set_target_long_double_is_f128(
             matches!(self.target, Target::Aarch64 | Target::Riscv64)
         );
+        crate::common::types::set_target_char_is_unsigned(self.char_is_unsigned());
 
         match self.mode {
             CompileMode::PreprocessOnly => self.run_preprocess_only(),
@@ -774,6 +779,12 @@ impl Driver {
         }
     }
 
+    /// Whether plain `char` is unsigned for this compilation: the target default
+    /// unless -funsigned-char or -fsigned-char was given.
+    pub(super) fn char_is_unsigned(&self) -> bool {
+        self.target.plain_char_is_unsigned(self.char_unsigned_flag)
+    }
+
     /// Configure the preprocessor with CLI-defined macros and target.
     pub(super) fn configure_preprocessor(&self, preprocessor: &mut Preprocessor) {
         // Set target architecture macros
@@ -783,6 +794,9 @@ impl Driver {
             Target::I686 => preprocessor.set_target("i686"),
             Target::X86_64 => preprocessor.set_target("x86_64"),
         }
+        // __CHAR_UNSIGNED__, CHAR_MIN and CHAR_MAX follow the effective plain-char
+        // signedness. Done before the user's -D options are applied below.
+        preprocessor.set_char_unsigned(self.char_is_unsigned());
         // Apply RISC-V ABI/arch overrides from -mabi= and -march= flags.
         // These must come after set_target() which sets defaults for RV64GC/lp64d.
         if self.target == Target::Riscv64 {

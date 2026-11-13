@@ -116,7 +116,7 @@ semantic distinctions that matter for type checking, sizeof, and ABI:
 
 ```
 CType::Void, Bool,
-       Char, UChar, Short, UShort, Int, UInt,
+       Char, SChar, UChar, Short, UShort, Int, UInt,
        Long, ULong, LongLong, ULongLong, Int128, UInt128,
        Float, Double, LongDouble,
        ComplexFloat, ComplexDouble, ComplexLongDouble,
@@ -189,11 +189,15 @@ Both type systems depend on target parameters stored in thread-locals:
 
 - `TARGET_PTR_SIZE` (4 for i686/ILP32, 8 for x86-64/AArch64/RISC-V LP64)
 - `TARGET_LONG_DOUBLE_IS_F128` (true for AArch64/RISC-V, false for x86)
+- `TARGET_CHAR_IS_UNSIGNED` (whether plain `char` is unsigned: the target default,
+  which is true for AArch64/RISC-V, overridden by `-funsigned-char` and
+  `-fsigned-char`; false when nothing sets it)
 
-The driver calls `set_target_ptr_size()` and `set_target_long_double_is_f128()`
-before compilation begins. Helper functions like `target_int_ir_type()` and
-`widened_op_type()` use these to return target-appropriate types, preventing
-hardcoded assumptions from leaking into phase-specific code.
+The driver calls `set_target_ptr_size()`, `set_target_long_double_is_f128()` and
+`set_target_char_is_unsigned()` before compilation begins. Helper functions like
+`target_int_ir_type()` and `widened_op_type()` use these to return
+target-appropriate types, preventing hardcoded assumptions from leaking into
+phase-specific code.
 
 ---
 
@@ -577,9 +581,10 @@ evaluation logic for:
   in 32 bits, otherwise `IrConst::I64`. Other integer literal kinds
   (`LongLiteral`, `LongLongLiteral`, `UIntLiteral`, `ULongLiteral`,
   `ULongLongLiteral`) always produce `IrConst::I64`. Char literals are
-  sign-extended from `signed char` to `int`, matching GCC behavior. Long
-  double literals produce `IrConst::long_double_with_bytes` with full-precision
-  byte storage.
+  converted as `(int)(char)c` (`char_literal_value`): sign-extended when plain
+  `char` is signed (`'\xEF'` is -17) and zero-extended when it is unsigned (239),
+  matching GCC. Long double literals produce `IrConst::long_double_with_bytes`
+  with full-precision byte storage.
 
 - **Builtin constant folding** (`eval_builtin_call`) -- Evaluates
   `__builtin_bswap`, `__builtin_clz`, `__builtin_ctz`, `__builtin_popcount`,

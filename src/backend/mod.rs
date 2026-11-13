@@ -223,6 +223,21 @@ impl Target {
         matches!(self, Target::I686)
     }
 
+    /// Whether plain `char` is unsigned by default on this target (C11 6.2.5p15
+    /// leaves it implementation-defined). AArch64 and RISC-V psABIs: unsigned;
+    /// x86-64 and i386 psABIs: signed.
+    pub(crate) fn char_is_unsigned_default(&self) -> bool {
+        matches!(self, Target::Aarch64 | Target::Riscv64)
+    }
+
+    /// Whether plain `char` is unsigned given the result of the command line:
+    /// `Some(true)` for -funsigned-char, `Some(false)` for -fsigned-char, `None`
+    /// for neither (the target default applies). This is the single decision
+    /// that the thread-local, `__CHAR_UNSIGNED__` and `CHAR_MIN`/`CHAR_MAX` follow.
+    pub(crate) fn plain_char_is_unsigned(&self, flag: Option<bool>) -> bool {
+        flag.unwrap_or(self.char_is_unsigned_default())
+    }
+
     /// Pointer size in bytes for this target.
     pub(crate) fn ptr_size(&self) -> usize {
         if self.is_32bit() { 4 } else { 8 }
@@ -383,5 +398,27 @@ impl Target {
     /// -shared, -r).
     pub(crate) fn link_with_args(&self, object_files: &[&str], output_path: &str, user_args: &[String]) -> Result<(), String> {
         common::link_with_args(&self.linker_config(), object_files, output_path, user_args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_char_is_unsigned_default_per_target() {
+        assert!(!Target::X86_64.char_is_unsigned_default());
+        assert!(!Target::I686.char_is_unsigned_default());
+        assert!(Target::Aarch64.char_is_unsigned_default());
+        assert!(Target::Riscv64.char_is_unsigned_default());
+    }
+
+    #[test]
+    fn test_char_signedness_flag_overrides_target_default() {
+        for target in [Target::X86_64, Target::I686, Target::Aarch64, Target::Riscv64] {
+            assert_eq!(target.plain_char_is_unsigned(None), target.char_is_unsigned_default());
+            assert!(target.plain_char_is_unsigned(Some(true)));
+            assert!(!target.plain_char_is_unsigned(Some(false)));
+        }
     }
 }

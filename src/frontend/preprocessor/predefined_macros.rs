@@ -421,6 +421,22 @@ impl Preprocessor {
         }
     }
 
+    /// Define or undefine `__CHAR_UNSIGNED__` and set the plain-char limits
+    /// `CHAR_MIN`/`CHAR_MAX` to match. `unsigned` is the effective signedness of
+    /// plain `char` (target default or -f[un]signed-char), decided by the driver;
+    /// `set_target` does not define `__CHAR_UNSIGNED__`.
+    pub fn set_char_unsigned(&mut self, unsigned: bool) {
+        if unsigned {
+            self.define_simple_macro("__CHAR_UNSIGNED__", "1");
+            self.define_simple_macro("CHAR_MIN", "0");
+            self.define_simple_macro("CHAR_MAX", "255");
+        } else {
+            self.macros.undefine("__CHAR_UNSIGNED__");
+            self.define_simple_macro("CHAR_MIN", "(-128)");
+            self.define_simple_macro("CHAR_MAX", "127");
+        }
+    }
+
     /// Set the target architecture, updating predefined macros and include paths.
     pub fn set_target(&mut self, target: &str) {
         match target {
@@ -462,8 +478,6 @@ impl Preprocessor {
                 self.define_simple_macro("__ARM_ALIGN_MAX_STACK_PWR", "16");
                 self.define_simple_macro("__AARCH64EL__", "1");
                 self.define_simple_macro("__AARCH64_CMODEL_SMALL__", "1");
-                // ARM: char is unsigned by default
-                self.define_simple_macro("__CHAR_UNSIGNED__", "1");
                 // Replace x86 include paths with aarch64 paths
                 self.system_include_paths.retain(|p| {
                     let s = p.to_string_lossy();
@@ -751,5 +765,50 @@ impl Preprocessor {
         if !has_f && !has_d {
             self.macros.undefine("__riscv_flen");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(pp: &Preprocessor, name: &str) -> Option<String> {
+        pp.macros.get(name).map(|m| m.body.clone())
+    }
+
+    #[test]
+    fn test_set_target_does_not_decide_char_signedness() {
+        for target in ["x86_64", "i686", "aarch64", "riscv64"] {
+            let mut pp = Preprocessor::new();
+            pp.set_target(target);
+            assert!(!pp.macros.is_defined("__CHAR_UNSIGNED__"), "{}", target);
+        }
+    }
+
+    #[test]
+    fn test_char_unsigned_macro_follows_setting() {
+        for target in ["x86_64", "i686", "aarch64", "riscv64"] {
+            let mut pp = Preprocessor::new();
+            pp.set_target(target);
+            pp.set_char_unsigned(true);
+            assert_eq!(body(&pp, "__CHAR_UNSIGNED__").as_deref(), Some("1"), "{}", target);
+            pp.set_char_unsigned(false);
+            assert!(!pp.macros.is_defined("__CHAR_UNSIGNED__"), "{}", target);
+        }
+    }
+
+    #[test]
+    fn test_char_limit_builtins_follow_setting() {
+        let mut pp = Preprocessor::new();
+        pp.set_char_unsigned(true);
+        assert_eq!(body(&pp, "CHAR_MIN").as_deref(), Some("0"));
+        assert_eq!(body(&pp, "CHAR_MAX").as_deref(), Some("255"));
+        pp.set_char_unsigned(false);
+        assert_eq!(body(&pp, "CHAR_MIN").as_deref(), Some("(-128)"));
+        assert_eq!(body(&pp, "CHAR_MAX").as_deref(), Some("127"));
+        // The limits of the explicitly signed and unsigned types never change.
+        assert_eq!(body(&pp, "SCHAR_MIN").as_deref(), Some("(-128)"));
+        assert_eq!(body(&pp, "SCHAR_MAX").as_deref(), Some("127"));
+        assert_eq!(body(&pp, "UCHAR_MAX").as_deref(), Some("255"));
     }
 }
