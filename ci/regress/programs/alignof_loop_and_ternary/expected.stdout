@@ -1,0 +1,5 @@
+loop iterations: 3
+conditional: 1
+comma: 1
+int minus alignof: 1
+uchar minus alignof: 1

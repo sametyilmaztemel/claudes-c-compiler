@@ -1,0 +1,8 @@
+int destination: -1
+long cast: 0
+int cast: 0
+plain equality: 1
+no wrap: 1
+sizeof wraps: 1
+sizeof vs -1: 1
+alignof wraps: 1

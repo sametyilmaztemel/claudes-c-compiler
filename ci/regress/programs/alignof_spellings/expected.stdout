@@ -1,0 +1,9 @@
+_Alignof(type): 1
+_Alignof(expr): 1
+__alignof__(type): 1
+__alignof__(expr): 1
+__alignof(type): 1
+alignof(type): 1
+alignof(expr): 1
+negated: 1
+short minus 3: 1

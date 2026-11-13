@@ -1,0 +1,7 @@
+alignof > -5: 0
+-5 < alignof: 0
+-1 < alignof: 0
+alignof > -1: 0
+literal -1: 0
+alignof < -1: 1
+ternary: 2

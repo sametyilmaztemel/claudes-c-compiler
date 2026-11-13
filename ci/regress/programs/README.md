@@ -22,3 +22,4 @@ every target.
 | `hexfloat_*` | Hexadecimal floating constants are converted exactly and rounded once (lexer) | `anthropics/claudes-c-compiler#332`, row 6 |
 | `static_init_*` | Address constants in static initializers are resolved instead of lowered to zero: `*f`, `&&label`, `&"s"` and braced string pointers (IR lowering) | `anthropics/claudes-c-compiler#332`, row 10 |
 | `compound_assign_*` | A signed left operand of a compound assignment is converted by value when the common type is unsigned, as in `x /= sizeof(int)` (IR lowering) | none |
+| `alignof_*` | `_Alignof` and `__alignof__` have type `size_t`, like `sizeof` (IR lowering) | `anthropics/claudes-c-compiler#332`, row 1 |

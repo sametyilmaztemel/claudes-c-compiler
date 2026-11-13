@@ -1,0 +1,7 @@
+const shift: 1
+const div: 1
+const rem: 1
+runtime shift: 1
+runtime div: 1
+runtime rem: 1
+scaled: 1
