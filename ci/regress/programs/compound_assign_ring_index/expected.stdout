@@ -1,0 +1,8 @@
+wrap(-10) = 6
+wrap(-5) = 4
+wrap(0) = 0
+wrap(5) = 5
+wrap(10) = 3
+step_back(3, 5) = 7
+step_back(0, 20) = 3
+sum = 18
