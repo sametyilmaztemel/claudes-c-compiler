@@ -488,6 +488,7 @@ impl<'a> SemaConstEval<'a> {
         match (t1, t2) {
             (CType::Pointer(a, _), CType::Pointer(b, _)) => self.ctypes_compatible(a, b),
             (CType::Array(a, _), CType::Array(b, _)) => self.ctypes_compatible(a, b),
+            (CType::Function(a), CType::Function(b)) => a.is_compatible_with(b, &|x, y| self.ctypes_compatible(x, y)),
             _ => t1 == t2,
         }
     }
@@ -1181,8 +1182,14 @@ fn ctype_from_type_spec(spec: &TypeSpecifier, types: &TypeContext) -> CType {
             }
         }
         TypeSpecifier::TypeofType(inner) => ctype_from_type_spec(inner, types),
-        TypeSpecifier::FunctionPointer(_, _, _) => {
-            CType::Pointer(Box::new(CType::Void), AddressSpace::Default) // function pointers are pointer-sized
+        TypeSpecifier::FunctionPointer(ret, params, variadic) => {
+            // Keep the signature so that __builtin_types_compatible_p in a
+            // constant context (enum value, array size) can compare it.
+            CType::Pointer(Box::new(CType::Function(Box::new(crate::common::types::FunctionType {
+                return_type: ctype_from_type_spec(ret, types),
+                params: params.iter().map(|p| (ctype_from_type_spec(&p.type_spec, types), None)).collect(),
+                variadic: *variadic,
+            }))), AddressSpace::Default)
         }
         TypeSpecifier::Vector(inner, total_bytes) => {
             let elem_ctype = ctype_from_type_spec(inner, types);

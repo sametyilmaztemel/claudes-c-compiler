@@ -246,6 +246,169 @@ pub struct FunctionType {
     pub variadic: bool,
 }
 
+impl FunctionType {
+    /// Function type compatibility after C11 6.7.6.3p15. The return types and the
+    /// adjusted parameter types are compared with `compat`, so each caller keeps
+    /// its own rules for the component types. Parameter names do not take part.
+    /// Array and function parameters are adjusted to pointers first; qualifiers
+    /// on a parameter are not represented in CType.
+    ///
+    /// `()` and `(void)` are stored alike, as an empty, non-variadic parameter
+    /// list, and are both compared as a prototype with no parameters. That is
+    /// the C23 meaning of `()`: it is compatible only with another empty list,
+    /// never with a list that has parameters or is variadic. The C17 rule for an
+    /// empty list outside a definition (6.7.6.3p15: compatible with a non-variadic
+    /// prototype whose parameters the default argument promotions leave
+    /// unchanged) is not implemented, because the type does not record which of
+    /// the two was written.
+    pub fn is_compatible_with(&self, other: &FunctionType, compat: &dyn Fn(&CType, &CType) -> bool) -> bool {
+        if !compat(&self.return_type, &other.return_type) {
+            return false;
+        }
+        fn adjust(t: &CType) -> CType {
+            match t {
+                CType::Array(elem, _) => CType::Pointer(elem.clone(), AddressSpace::Default),
+                CType::Function(_) => CType::Pointer(Box::new(t.clone()), AddressSpace::Default),
+                other => other.clone(),
+            }
+        }
+        self.variadic == other.variadic
+            && self.params.len() == other.params.len()
+            && self.params.iter().zip(other.params.iter())
+                .all(|((a, _), (b, _))| compat(&adjust(a), &adjust(b)))
+    }
+}
+
+#[cfg(test)]
+mod function_type_tests {
+    use super::*;
+
+    fn func(ret: CType, params: &[(CType, Option<&str>)], variadic: bool) -> FunctionType {
+        FunctionType {
+            return_type: ret,
+            params: params.iter().map(|(t, n)| (t.clone(), n.map(String::from))).collect(),
+            variadic,
+        }
+    }
+
+    fn compatible(a: &FunctionType, b: &FunctionType) -> bool {
+        a.is_compatible_with(b, &|x, y| x == y)
+    }
+
+    fn ptr(t: CType) -> CType {
+        CType::Pointer(Box::new(t), AddressSpace::Default)
+    }
+
+    #[test]
+    fn test_function_compat_ignores_parameter_names() {
+        let named = func(CType::Void, &[(CType::Int, Some("a")), (CType::Long, Some("b"))], false);
+        let unnamed = func(CType::Void, &[(CType::Int, None), (CType::Long, None)], false);
+        let renamed = func(CType::Void, &[(CType::Int, Some("x")), (CType::Long, Some("y"))], false);
+        assert!(compatible(&named, &unnamed));
+        assert!(compatible(&named, &renamed));
+        assert_ne!(named, unnamed, "the derived equality still compares names");
+    }
+
+    #[test]
+    fn test_function_compat_requires_same_signature() {
+        let base = func(CType::Int, &[(CType::Int, None), (CType::Double, None)], false);
+        assert!(compatible(&base, &base.clone()));
+        // return type
+        assert!(!compatible(&base, &func(CType::Long, &[(CType::Int, None), (CType::Double, None)], false)));
+        // parameter count
+        assert!(!compatible(&base, &func(CType::Int, &[(CType::Int, None)], false)));
+        assert!(!compatible(&base, &func(CType::Int, &[(CType::Int, None), (CType::Double, None), (CType::Int, None)], false)));
+        // parameter type
+        assert!(!compatible(&base, &func(CType::Int, &[(CType::Int, None), (CType::Float, None)], false)));
+        assert!(!compatible(&base, &func(CType::Int, &[(CType::Double, None), (CType::Int, None)], false)));
+        // variadic flag
+        assert!(!compatible(&base, &func(CType::Int, &[(CType::Int, None), (CType::Double, None)], true)));
+        let variadic = func(CType::Int, &[(CType::Int, None)], true);
+        assert!(compatible(&variadic, &variadic.clone()));
+        assert!(!compatible(&variadic, &func(CType::Int, &[(CType::Int, None)], false)));
+    }
+
+    #[test]
+    fn test_function_compat_adjusts_array_and_function_parameters() {
+        let array = func(CType::Void, &[(CType::Array(Box::new(CType::Int), Some(5)), None)], false);
+        let unsized_array = func(CType::Void, &[(CType::Array(Box::new(CType::Int), None), None)], false);
+        let pointer = func(CType::Void, &[(ptr(CType::Int), None)], false);
+        assert!(compatible(&array, &pointer));
+        assert!(compatible(&unsized_array, &pointer));
+        assert!(compatible(&array, &unsized_array));
+        assert!(!compatible(&array, &func(CType::Void, &[(ptr(CType::Long), None)], false)));
+
+        let callback = func(CType::Int, &[], false);
+        let by_function = func(CType::Void, &[(CType::Function(Box::new(callback.clone())), None)], false);
+        let by_pointer = func(CType::Void, &[(ptr(CType::Function(Box::new(callback))), None)], false);
+        assert!(compatible(&by_function, &by_pointer));
+    }
+
+    #[test]
+    fn test_function_compat_void_list_is_incompatible_with_a_parameter() {
+        // `(void)` is stored as an empty list: it matches no list with parameters,
+        // in either order.
+        let void_list = func(CType::Int, &[], false);
+        let int_list = func(CType::Int, &[(CType::Int, None)], false);
+        assert!(!compatible(&void_list, &int_list));
+        assert!(!compatible(&int_list, &void_list));
+        for other in [CType::Long, CType::Char, CType::Float, CType::Double, ptr(CType::Char)] {
+            let f = func(CType::Int, &[(other.clone(), None)], false);
+            assert!(!compatible(&void_list, &f), "{:?}", other);
+            assert!(!compatible(&f, &void_list), "{:?}", other);
+        }
+        assert!(!compatible(&void_list, &func(CType::Int, &[(CType::Int, None), (CType::Long, None)], false)));
+    }
+
+    #[test]
+    fn test_function_compat_empty_list_matches_only_an_empty_list() {
+        let empty = func(CType::Int, &[], false);
+        assert!(compatible(&empty, &func(CType::Int, &[], false)));
+        // The return type still has to match.
+        assert!(!compatible(&empty, &func(CType::Long, &[], false)));
+        // A variadic list is never compatible with an empty one, in either order.
+        let variadic_only = func(CType::Int, &[], true);
+        let variadic = func(CType::Int, &[(CType::Int, None)], true);
+        assert!(!compatible(&empty, &variadic_only));
+        assert!(!compatible(&variadic_only, &empty));
+        assert!(!compatible(&empty, &variadic));
+        assert!(!compatible(&variadic, &empty));
+        assert!(compatible(&variadic_only, &variadic_only.clone()));
+    }
+
+    #[test]
+    fn test_function_compat_uses_the_callers_component_comparator() {
+        let a = func(CType::Int, &[(CType::Int, None)], false);
+        let b = func(CType::Long, &[(CType::Long, None)], false);
+        let loose = |x: &CType, y: &CType| {
+            let int_like = |t: &CType| matches!(t, CType::Int | CType::Long);
+            x == y || (int_like(x) && int_like(y))
+        };
+        assert!(!a.is_compatible_with(&b, &|x, y| x == y));
+        assert!(a.is_compatible_with(&b, &loose));
+    }
+
+    #[test]
+    fn test_function_compat_recurses_through_function_pointers() {
+        let inner = |ret: CType| ptr(CType::Function(Box::new(func(ret, &[(CType::Int, Some("n"))], false))));
+        let a = func(CType::Void, &[(inner(CType::Int), None)], false);
+        let b = func(CType::Void, &[(inner(CType::Int), None)], false);
+        let c = func(CType::Void, &[(inner(CType::Long), None)], false);
+        let compat = |a: &FunctionType, b: &FunctionType| {
+            fn rec(x: &CType, y: &CType) -> bool {
+                match (x, y) {
+                    (CType::Pointer(p, _), CType::Pointer(q, _)) => rec(p, q),
+                    (CType::Function(f), CType::Function(g)) => f.is_compatible_with(g, &rec),
+                    _ => x == y,
+                }
+            }
+            a.is_compatible_with(b, &rec)
+        };
+        assert!(compat(&a, &b));
+        assert!(!compat(&a, &c));
+    }
+}
+
 /// StructField describes a single field in a struct or union declaration.
 /// Used during construction of StructLayout.
 

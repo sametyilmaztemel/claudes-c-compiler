@@ -845,42 +845,9 @@ impl Parser {
     /// Parse a type-name for __builtin_va_arg: type-specifier + abstract declarator.
     pub(super) fn parse_va_arg_type(&mut self) -> TypeSpecifier {
         if let Some(type_spec) = self.parse_type_specifier() {
-            let mut result_type = type_spec;
-            // Parse pointer declarators
-            while self.consume_if(&TokenKind::Star) {
-                result_type = TypeSpecifier::Pointer(Box::new(result_type), AddressSpace::Default);
-                self.skip_cv_qualifiers();
-            }
-            // Handle function pointer: type (*)(args)
-            if matches!(self.peek(), TokenKind::LParen) {
-                let save2 = self.pos;
-                self.advance();
-                if self.consume_if(&TokenKind::Star) {
-                    while !matches!(self.peek(), TokenKind::RParen | TokenKind::Eof) {
-                        self.advance();
-                    }
-                    self.consume_if(&TokenKind::RParen);
-                    if matches!(self.peek(), TokenKind::LParen) {
-                        self.skip_balanced_parens();
-                    }
-                    result_type = TypeSpecifier::Pointer(Box::new(result_type), AddressSpace::Default);
-                } else {
-                    self.pos = save2;
-                }
-            }
-            // Parse array dimensions
-            while matches!(self.peek(), TokenKind::LBracket) {
-                let open = self.peek_span();
-                self.advance();
-                let size = if matches!(self.peek(), TokenKind::RBracket) {
-                    None
-                } else {
-                    Some(Box::new(self.parse_expr()))
-                };
-                self.expect_closing(&TokenKind::RBracket, open);
-                result_type = TypeSpecifier::Array(Box::new(result_type), size);
-            }
-            result_type
+            // Full abstract declarator, as for casts and sizeof: keeps the
+            // parameter list of (*)(...) and the array in (*)[N].
+            self.parse_abstract_declarator_suffix(type_spec)
         } else {
             let span = self.peek_span();
             self.emit_error("expected type in __builtin_va_arg", span);

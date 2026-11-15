@@ -729,3 +729,117 @@ impl Parser {
         Expr::GenericSelection(Box::new(controlling), associations, span)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::frontend::lexer::Lexer;
+    use crate::frontend::parser::ast::{BlockItem, Expr, ExternalDecl, Stmt, TypeSpecifier};
+    use crate::frontend::parser::Parser;
+
+    /// Parse `return <expr>;` inside a function and return the expression.
+    fn parse_return_expr(expr: &str) -> Expr {
+        let source = format!("void f(void) {{ return {}; }}", expr);
+        let tokens = Lexer::new(&source, 0).tokenize();
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse();
+        assert_eq!(parser.error_count, 0, "test source does not parse: {}", expr);
+        match ast.decls.into_iter().next() {
+            Some(ExternalDecl::FunctionDef(f)) => match f.body.items.into_iter().next() {
+                Some(BlockItem::Statement(Stmt::Return(Some(e), _))) => e,
+                other => panic!("expected a return statement, got {:?}", other),
+            },
+            other => panic!("expected a function definition, got {:?}", other),
+        }
+    }
+
+    /// The two type operands of `__builtin_types_compatible_p(a, b)`.
+    fn compat_operands(a: &str, b: &str) -> (TypeSpecifier, TypeSpecifier) {
+        match parse_return_expr(&format!("__builtin_types_compatible_p({}, {})", a, b)) {
+            Expr::BuiltinTypesCompatibleP(t1, t2, _) => (t1, t2),
+            other => panic!("expected __builtin_types_compatible_p, got {:?}", other),
+        }
+    }
+
+    fn va_arg_type(ty: &str) -> TypeSpecifier {
+        match parse_return_expr(&format!("__builtin_va_arg(ap, {})", ty)) {
+            Expr::VaArg(_, t, _) => t,
+            other => panic!("expected __builtin_va_arg, got {:?}", other),
+        }
+    }
+
+    fn assert_fn_ptr(ts: &TypeSpecifier, params: usize, variadic: bool) {
+        match ts {
+            TypeSpecifier::FunctionPointer(_, p, v) => {
+                assert_eq!((p.len(), *v), (params, variadic), "{:?}", ts)
+            }
+            other => panic!("expected a function pointer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_types_compatible_operands_keep_the_parameter_list() {
+        let (a, b) = compat_operands("int(*)(float, double)", "int(*)(float)");
+        assert_fn_ptr(&a, 2, false);
+        assert_fn_ptr(&b, 1, false);
+        let (a, b) = compat_operands("int(*)(int, ...)", "int(*)(void)");
+        assert_fn_ptr(&a, 1, true);
+        assert_fn_ptr(&b, 0, false);
+        match &compat_operands("int(**)(int)", "int").0 {
+            TypeSpecifier::Pointer(inner, _) => assert_fn_ptr(inner, 1, false),
+            other => panic!("expected a pointer to a function pointer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_types_compatible_operands_parse_nested_declarators() {
+        // int (*(*)(int))(float): pointer to a function taking int and
+        // returning a pointer to a function taking float and returning int.
+        let (a, _) = compat_operands("int(*(*)(int))(float)", "int");
+        match &a {
+            TypeSpecifier::FunctionPointer(ret, params, false) => {
+                assert_eq!(params.len(), 1);
+                assert_fn_ptr(ret, 1, false);
+            }
+            other => panic!("expected a function pointer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_types_compatible_operands_parse_pointer_to_array() {
+        // int (*)[3] is a pointer to an array, not an array of pointers.
+        let (a, b) = compat_operands("int(*)[3]", "int*[3]");
+        match &a {
+            TypeSpecifier::Pointer(inner, _) => assert!(matches!(**inner, TypeSpecifier::Array(_, Some(_)))),
+            other => panic!("expected a pointer to an array, got {:?}", other),
+        }
+        match &b {
+            TypeSpecifier::Array(elem, Some(_)) => assert!(matches!(**elem, TypeSpecifier::Pointer(_, _))),
+            other => panic!("expected an array of pointers, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_types_compatible_operands_apply_array_dimensions_in_order() {
+        // int[2][3] is an array of 2 arrays of 3 ints.
+        let (a, _) = compat_operands("int[2][3]", "int");
+        match &a {
+            TypeSpecifier::Array(row, Some(outer)) => {
+                assert!(matches!(**outer, Expr::IntLiteral(2, _)), "{:?}", outer);
+                assert!(matches!(&**row, TypeSpecifier::Array(_, Some(inner)) if matches!(**inner, Expr::IntLiteral(3, _))));
+            }
+            other => panic!("expected an array of arrays, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_va_arg_operand_keeps_function_pointer_and_array_pointer_types() {
+        assert_fn_ptr(&va_arg_type("int (*)(int, char *)"), 2, false);
+        assert_fn_ptr(&va_arg_type("void (*)(void)"), 0, false);
+        match va_arg_type("int (*)[3]") {
+            TypeSpecifier::Pointer(inner, _) => assert!(matches!(*inner, TypeSpecifier::Array(_, Some(_)))),
+            other => panic!("expected a pointer to an array, got {:?}", other),
+        }
+        assert!(matches!(va_arg_type("char *const *"), TypeSpecifier::Pointer(_, _)));
+        assert!(matches!(va_arg_type("long"), TypeSpecifier::Long));
+    }
+}

@@ -161,8 +161,8 @@ impl Lowerer {
             // Structs/Unions: use derived PartialEq (compares name + fields)
             (CType::Struct(s1), CType::Struct(s2)) => s1 == s2,
             (CType::Union(u1), CType::Union(u2)) => u1 == u2,
-            // Function types
-            (CType::Function(f1), CType::Function(f2)) => f1 == f2,
+            // Function types: after C11 6.7.6.3p15 (parameter names are ignored)
+            (CType::Function(f1), CType::Function(f2)) => f1.is_compatible_with(f2, &Self::ctypes_compatible),
             // All other types (scalars, void, bool, etc.): direct enum equality
             _ => a_norm == b_norm,
         }
