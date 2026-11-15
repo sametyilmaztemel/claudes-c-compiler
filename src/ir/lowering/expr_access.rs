@@ -574,7 +574,10 @@ impl Lowerer {
                 (CType::Array(a, _), CType::Array(b, _)) => {
                     return self.ctype_matches_generic(a, b);
                 }
-                // For types that carry identity data (Struct, Union, Enum, Function,
+                (CType::Function(a), CType::Function(b)) => {
+                    return a.is_compatible_with(b, &|x, y| self.ctype_matches_generic(x, y));
+                }
+                // For types that carry identity data (Struct, Union, Enum,
                 // Vector), we must compare the full type, not just the discriminant.
                 // Primitive types (Int, Float, etc.) have no data so PartialEq works too.
                 _ => return controlling == assoc,
@@ -1435,3 +1438,328 @@ impl Lowerer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::super::test_util::lower_source;
+    use crate::backend::Target;
+    use crate::ir::reexports::{GlobalInit, Instruction, IrModule, Operand, Terminator};
+
+    /// Value returned by the function `name`, which must return a constant
+    /// (possibly converted by one cast).
+    fn returned_const(module: &IrModule, name: &str) -> i64 {
+        let func = module.functions.iter().find(|f| f.name == name).expect("function");
+        let block = &func.blocks[0];
+        match &block.terminator {
+            Terminator::Return(Some(Operand::Const(c))) => c.to_i64().expect("integer constant"),
+            Terminator::Return(Some(Operand::Value(v))) => block
+                .instructions
+                .iter()
+                .find_map(|i| match i {
+                    Instruction::Cast { dest, src: Operand::Const(c), .. } if dest == v => c.to_i64(),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("`{}` does not return a constant: {:?}", name, block)),
+            other => panic!("`{}` does not return a constant: {:?}", name, other),
+        }
+    }
+
+    /// Evaluate `expr` after `decls`, as the operand of a return statement.
+    fn eval(decls: &str, expr: &str) -> i64 {
+        let src = format!("{}\nint probe(void) {{ return {}; }}\n", decls, expr);
+        returned_const(&lower_source(Target::X86_64, &src), "probe")
+    }
+
+    fn compatible(a: &str, b: &str) -> i64 {
+        eval("", &format!("__builtin_types_compatible_p({}, {})", a, b))
+    }
+
+    #[test]
+    fn test_types_compatible_compares_function_pointer_operands() {
+        // The parameter list of a function pointer operand takes part in the comparison.
+        let cases = [
+            ("int(*)(float,double)", "int(*)(float)", 0),
+            ("int(*)(float)", "int(*)(float)", 1),
+            ("int(*)(int,...)", "int(*)(int)", 0),
+            ("int(*)(int,...)", "int(*)(int,...)", 1),
+            ("int(*)(int)", "long(*)(int)", 0),
+            ("int(*)(int)", "int(*)(long)", 0),
+            ("int(**)(int)", "int(**)(long)", 0),
+            ("int(**)(int)", "int(**)(int)", 1),
+            ("int(*)(char*,double)", "int(*)(char*,float)", 0),
+            ("int(*)(float)", "int*", 0),
+            // Nested declarator: pointer to function returning a function pointer.
+            ("int(*(*)(int))(float)", "int(*(*)(int))(double)", 0),
+            ("int(*(*)(int))(float)", "int(*(*)(int))(float)", 1),
+            // Pointer to array, not array of pointers.
+            ("int(*)[3]", "int*[3]", 0),
+            ("int(*)[3]", "int(*)[3]", 1),
+        ];
+        for (a, b, want) in cases {
+            assert_eq!(compatible(a, b), want, "{} vs {}", a, b);
+        }
+    }
+
+    #[test]
+    fn test_types_compatible_ignores_parameter_names_and_adjusts_parameters() {
+        let cases = [
+            ("int(*)(int x)", "int(*)(int)", 1),
+            ("int(*)(int x, long y)", "int(*)(int y, long x)", 1),
+            ("int(*)(const int)", "int(*)(int)", 1),
+            ("int(*)(int[])", "int(*)(int*)", 1),
+            ("int(*)(int[5])", "int(*)(int*)", 1),
+            // Passes because a function parameter written out in a parameter list
+            // is read as a pointer to its return type (both sides become `int *`,
+            // see the sema README), not through the parameter adjustment.
+            ("int(*)(int(int))", "int(*)(int(*)(int))", 1),
+            ("int(*)(int[])", "int(*)(long*)", 0),
+        ];
+        for (a, b, want) in cases {
+            assert_eq!(compatible(a, b), want, "{} vs {}", a, b);
+        }
+        // Array and function typedefs reach the adjustment in is_compatible_with
+        // as array and function types, in function bodies and in enum values.
+        let decls = "typedef int A5[5];\ntypedef int F(int);\n";
+        for (a, b, want) in [
+            ("void(*)(A5)", "void(*)(int*)", 1),
+            ("void(*)(A5)", "void(*)(long*)", 0),
+            ("void(*)(F)", "void(*)(F*)", 1),
+        ] {
+            let builtin = format!("__builtin_types_compatible_p({}, {})", a, b);
+            assert_eq!(eval(decls, &builtin), want, "{} vs {}", a, b);
+            let in_enum = format!("{}enum {{ E = {} }};", decls, builtin);
+            assert_eq!(eval(&in_enum, "E"), want, "enum: {} vs {}", a, b);
+        }
+    }
+
+    #[test]
+    fn test_types_compatible_empty_list_is_compared_as_void() {
+        // `()` and `(void)` are stored alike and compare as a prototype with no
+        // parameters: compatible with each other, with nothing that has parameters.
+        let cases = [
+            ("int(*)()", "int(*)()", 1),
+            ("int(*)()", "int(*)(void)", 1),
+            ("int(*)(void)", "int(*)(void)", 1),
+            ("int(*)(void)", "int(*)(int)", 0),
+            ("int(*)(int)", "int(*)(void)", 0),
+            ("int(*)()", "int(*)(int)", 0),
+            ("int(*)(long,char*)", "int(*)()", 0),
+            ("int(*)()", "int(*)(float)", 0),
+            ("int(*)()", "int(*)(int,...)", 0),
+            ("int(*)(void)", "int(*)(int,...)", 0),
+            ("int(*)()", "long(*)()", 0),
+        ];
+        for (a, b, want) in cases {
+            assert_eq!(compatible(a, b), want, "{} vs {}", a, b);
+        }
+    }
+
+    #[test]
+    fn test_generic_matches_function_designator_ignoring_parameter_names() {
+        // The declared functions name their parameters; of the association
+        // type names, only `int(*)(int x)` names its parameter.
+        let decls = "void void_foo(int a);\nint ifn(int x);\nint vfn(int n, ...);\n";
+        assert_eq!(eval(decls, "_Generic(void_foo, int(*)(int): 3, int: 4, void(*)(int): 5)"), 5);
+        assert_eq!(eval(decls, "_Generic(&void_foo, int(*)(int): 3, int: 4, void(*)(int): 5)"), 5);
+        assert_eq!(eval(decls, "_Generic(ifn, void(*)(int): 5, int(*)(int x): 1, default: 9)"), 1);
+        assert_eq!(eval(decls, "_Generic(ifn, void(*)(int): 5, default: 9)"), 9);
+        assert_eq!(eval(decls, "_Generic(ifn, int(*)(int,int): 5, int(*)(long): 6, int(*)(int): 7)"), 7);
+        assert_eq!(eval(decls, "_Generic(vfn, int(*)(int): 1, int(*)(int,...): 2)"), 2);
+    }
+
+    #[test]
+    fn test_generic_selects_between_void_and_int_parameter_lists() {
+        // A prototype with no parameters and one with an int parameter are
+        // different types; the order of the associations must not matter.
+        let decls = "void fv(void);\nvoid fi(int a);\nvoid fe();\n\
+                     void (*pv)(void);\nvoid (*pi)(int);\nvoid (*pe)();\n";
+        let void_first = |e: &str| format!("_Generic({}, void(*)(void): 1, void(*)(int): 2, default: 9)", e);
+        let int_first = |e: &str| format!("_Generic({}, void(*)(int): 2, void(*)(void): 1, default: 9)", e);
+        for (expr, want) in [
+            ("fv", 1), ("fi", 2), ("&fv", 1), ("&fi", 2),
+            ("pv", 1), ("pi", 2), ("*pv", 1), ("*pi", 2),
+            // `()` is compared as `(void)`.
+            ("fe", 1), ("pe", 1),
+        ] {
+            assert_eq!(eval(decls, &void_first(expr)), want, "void first: {}", expr);
+            assert_eq!(eval(decls, &int_first(expr)), want, "int first: {}", expr);
+        }
+        // Only one of the two associations present: the other kind falls to default.
+        assert_eq!(eval(decls, "_Generic(fi, void(*)(void): 1, default: 9)"), 9);
+        assert_eq!(eval(decls, "_Generic(pv, void(*)(int): 2, default: 9)"), 9);
+    }
+
+    #[test]
+    fn test_generic_matches_function_pointer_variable() {
+        let decls = "int (*fp)(int, double);\n";
+        assert_eq!(eval(decls, "_Generic(fp, int(*)(int): 1, int(*)(int,double): 2, int(*)(double,int): 3)"), 2);
+        assert_eq!(eval(decls, "_Generic(&fp, int(*)(int,double): 1, int(**)(int,double): 2)"), 2);
+    }
+
+    #[test]
+    fn test_function_type_comparison_agrees_in_constant_contexts() {
+        // The builtin standing alone in a function body is evaluated by
+        // lowering; global initializers, enum values and the size of a global
+        // array object take the value sema computed. All must agree. The
+        // parser evaluates _Static_assert and does not evaluate this builtin
+        // there, so it is not covered. The agreement holds for the
+        // component types used here, which both evaluators map the same way;
+        // for some other component types they differ (for example a typedef of
+        // an enum), and then so do the two contexts.
+        let cases = [
+            ("int(*)(float,double)", "int(*)(float)", 0),
+            ("int(*)(float)", "int(*)(float)", 1),
+            ("int(*)(int)", "long(*)(int)", 0),
+            ("int(*)(int x)", "int(*)(int)", 1),
+            ("int(*)(int,...)", "int(*)(int)", 0),
+            ("int(**)(int)", "int(**)(long)", 0),
+            ("int(*(*)(int))(float)", "int(*(*)(int))(double)", 0),
+            ("int(*)()", "int(*)(int)", 0),
+            ("int(*)()", "int(*)(void)", 1),
+            ("int(*)(void)", "int(*)(int)", 0),
+        ];
+        for (a, b, want) in cases {
+            let call = format!("__builtin_types_compatible_p({}, {})", a, b);
+            assert_eq!(eval("", &call), want, "function body: {} vs {}", a, b);
+
+            let module = lower_source(Target::X86_64, &format!("int g = {};\n", call));
+            let g = module.globals.iter().find(|g| g.name == "g").expect("global g");
+            match &g.init {
+                GlobalInit::Scalar(c) => assert_eq!(c.to_i64(), Some(want), "initializer: {} vs {}", a, b),
+                other => panic!("unexpected initializer {:?}", other),
+            }
+
+            assert_eq!(eval(&format!("enum {{ E = {} }};", call), "E"), want, "enum value: {} vs {}", a, b);
+
+            let module = lower_source(Target::X86_64, &format!("char arr[1 + {}];\n", call));
+            let arr = module.globals.iter().find(|g| g.name == "arr").expect("global arr");
+            assert_eq!(arr.size as i64, 1 + want, "array size: {} vs {}", a, b);
+        }
+    }
+
+    #[test]
+    fn test_declared_function_types_compare_by_signature_in_constant_contexts() {
+        // The function type of a declaration carries parameter names; the type
+        // names here do not. Sema (enum values, the size of a global array
+        // object, global initializers) and lowering (the builtin standing alone
+        // in a function body) must both ignore the names.
+        let decls = "int named_fn(int x);\nvoid void_fn(void);\nvoid empty_fn();\n";
+        let cases = [
+            ("typeof(&named_fn)", "int(*)(int)", 1),
+            ("typeof(&named_fn)", "int(*)(long)", 0),
+            ("typeof(&void_fn)", "void(*)(void)", 1),
+            ("typeof(&void_fn)", "void(*)(int)", 0),
+            ("typeof(&empty_fn)", "void(*)(void)", 1),
+            ("typeof(&empty_fn)", "void(*)(int)", 0),
+        ];
+        for (a, b, want) in cases {
+            let call = format!("__builtin_types_compatible_p({}, {})", a, b);
+            assert_eq!(eval(decls, &call), want, "function body: {} vs {}", a, b);
+            assert_eq!(eval(&format!("{}enum {{ E = {} }};", decls, call), "E"), want, "enum value: {} vs {}", a, b);
+            let module = lower_source(Target::X86_64, &format!("{}char arr[1 + {}];\n", decls, call));
+            let arr = module.globals.iter().find(|g| g.name == "arr").expect("global arr");
+            assert_eq!(arr.size as i64, 1 + want, "array size: {} vs {}", a, b);
+            let module = lower_source(Target::X86_64, &format!("{}int g = {};\n", decls, call));
+            let g = module.globals.iter().find(|g| g.name == "g").expect("global g");
+            assert!(matches!(&g.init, GlobalInit::Scalar(c) if c.to_i64() == Some(want)), "initializer: {} vs {}: {:?}", a, b, g.init);
+        }
+    }
+
+    #[test]
+    fn test_generic_function_association_in_constant_contexts() {
+        let decls = "void void_foo(int a);\n";
+        let generic = "_Generic(void_foo, int(*)(int): 3, int: 4, void(*)(int): 5)";
+        assert_eq!(eval(decls, generic), 5);
+        assert_eq!(eval(&format!("{}enum {{ E = {} }};", decls, generic), "E"), 5);
+        // The type of the selected association, as seen through sizeof.
+        let typed = "sizeof(_Generic(void_foo, int(*)(int): (char)1, void(*)(int): (long)1))";
+        assert_eq!(eval(decls, typed), 8);
+        // The same in an enum value.
+        assert_eq!(eval(&format!("{}enum {{ E = {} }};", decls, typed), "E"), 8);
+        let module = lower_source(Target::X86_64, &format!("{}int g = {};\n", decls, generic));
+        let g = module.globals.iter().find(|g| g.name == "g").expect("global g");
+        assert!(matches!(&g.init, GlobalInit::Scalar(c) if c.to_i64() == Some(5)), "{:?}", g.init);
+    }
+
+    #[test]
+    fn test_generic_function_selection_is_typed_consistently_by_sema() {
+        // Sema checks the operands of a pointer subtraction against the type it
+        // infers for the _Generic selection: selecting `&i[2]` is fine, falling
+        // through to `default` (`long *`) would be an error.
+        lower_source(Target::X86_64, "void void_foo(int a);\n\
+             int i[4]; long l[4];\n\
+             long probe(void) {\n\
+                 return _Generic(void_foo, int(*)(int): &l[1], void(*)(int): &i[2], default: &l[2]) - &i[0];\n\
+             }\n");
+    }
+
+    #[test]
+    fn test_generic_function_decay_applies_only_to_the_controlling_type() {
+        // A function pointer is not a pointer to a function pointer: sema must
+        // select `default` here, as lowering does, so the subtraction is int* - int*.
+        // (Only acceptance is checked; the value of a subtraction with a _Generic
+        // operand is affected by a separate pointer-subtraction bug.)
+        lower_source(Target::X86_64, "int (*fp)(int);\n\
+             typedef void handler_t(int);\n\
+             void reg(handler_t *h);\n\
+             int i[4]; long l[4];\n\
+             long probe(void) {\n\
+                 return (_Generic(fp, int(**)(int): &l[1], default: &i[2]) - &i[0])\n\
+                      + (_Generic(reg, void(*)(handler_t **): &l[1], default: &i[2]) - &i[0]);\n\
+             }\n");
+    }
+
+    #[test]
+    fn test_generic_function_pointer_does_not_match_pointer_to_it_in_sema() {
+        // Sema decays a function designator once, at the top, as lowering does:
+        // a function pointer (or designator) must not match an association that
+        // is a pointer to that function pointer type. The enum value is
+        // evaluated by sema, through the type sema gives the selection.
+        let decls = "typedef int (*cb_t)(int);\nint f1(int x);\ncb_t fp;\n";
+        for ctrl in ["fp", "f1"] {
+            let e = format!(
+                "enum {{ E = __builtin_types_compatible_p(typeof(_Generic({}, cb_t*: (char)0, cb_t: 0L)), long) }};",
+                ctrl
+            );
+            assert_eq!(eval(&format!("{}{}", decls, e), "E"), 1, "{}", ctrl);
+        }
+        let e = "enum { E = __builtin_types_compatible_p(typeof(_Generic(&fp, cb_t**: (char)0, cb_t*: 0L)), long) };";
+        assert_eq!(eval(&format!("{}{}", decls, e), "E"), 1, "&fp");
+    }
+
+    #[test]
+    fn test_function_compat_recurses_with_each_comparators_rules() {
+        // Nested function types that differ only in parameter names are equal
+        // only through the comparator's own recursion.
+        let decls = "typedef int (*cbn)(int v);\ntypedef int (*cbu)(int);\nvoid reg_n(cbn h);\n";
+        assert_eq!(eval(decls, "__builtin_types_compatible_p(typeof(&reg_n), void(*)(cbu))"), 1);
+        assert_eq!(eval(decls, "_Generic(reg_n, void(*)(cbu): 1, default: 0)"), 1);
+        let e = format!("{}enum {{ E = __builtin_types_compatible_p(void(*)(cbn), void(*)(cbu)) }};", decls);
+        assert_eq!(eval(&e, "E"), 1);
+    }
+
+    #[test]
+    fn test_generic_nested_callback_typedef_is_typed_by_sema_recursion() {
+        // The nested callback types differ only in parameter names: sema must
+        // match them through its own recursion, or it types the selection as
+        // `default` (`long *`) and rejects the subtraction.
+        lower_source(Target::X86_64, "typedef int (*cbn)(int v);\n\
+             typedef int (*cbu)(int);\n\
+             void reg_n(cbn h);\n\
+             int i[4]; long l[4];\n\
+             long probe(void) { return _Generic(reg_n, void(*)(cbu): &i[2], default: &l[1]) - &i[0]; }\n");
+    }
+
+    #[test]
+    fn test_va_arg_accepts_function_pointer_and_pointer_to_array_types() {
+        // __builtin_va_arg shares its type parser with __builtin_types_compatible_p.
+        lower_source(Target::X86_64, "typedef __builtin_va_list va_list;\n\
+             int run(int n, ...) {\n\
+                 va_list ap; __builtin_va_start(ap, n);\n\
+                 int (*f)(int) = __builtin_va_arg(ap, int (*)(int));\n\
+                 int (*a)[3] = __builtin_va_arg(ap, int (*)[3]);\n\
+                 int (*(*g)(int))(float) = __builtin_va_arg(ap, int (*(*)(int))(float));\n\
+                 __builtin_va_end(ap);\n\
+                 return f((*a)[1]) + (g != 0);\n\
+             }\n");
+    }
+}

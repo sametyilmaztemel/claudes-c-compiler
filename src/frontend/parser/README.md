@@ -229,6 +229,12 @@ commas).
 This same speculative pattern is used by `parse_sizeof_expr`, where
 `sizeof(type)` and `sizeof expr` must be disambiguated.
 
+The type operands of `__builtin_va_arg` and `__builtin_types_compatible_p`
+(`parse_va_arg_type`) go through the same abstract declarator parsing, so
+the parameter lists in `int (*)(float)` and `int (*(*)(int))(float)` and the
+array in `int (*)[3]` are kept in the type. A form that this parsing misreads
+in a cast or in `sizeof`, such as `void (*(*)[2])(void)`, is misread here too.
+
 ---
 
 ## The Typedef/Identifier Ambiguity

@@ -504,7 +504,15 @@ impl<'a> ExprTypeChecker<'a> {
 
     /// Resolve a _Generic selection based on the controlling expression's type.
     fn infer_generic_selection_ctype(&self, controlling: &Expr, associations: &[GenericAssociation]) -> Option<CType> {
-        let controlling_ct = self.infer_expr_ctype(controlling);
+        // A function designator decays to a pointer to the function (C11
+        // 6.3.2.1p4, function to pointer conversion), as in lowering. Only the
+        // controlling type itself decays, here and once: ctype_matches_generic
+        // recurses into pointee and parameter types, where a function type must
+        // not match a pointer.
+        let controlling_ct = self.infer_expr_ctype(controlling).map(|ct| match ct {
+            CType::Function(ft) => CType::Pointer(Box::new(CType::Function(ft)), AddressSpace::Default),
+            other => other,
+        });
         let mut default_expr: Option<&Expr> = None;
 
         for assoc in associations {
@@ -539,7 +547,10 @@ impl<'a> ExprTypeChecker<'a> {
                 (CType::Array(a, _), CType::Array(b, _)) => {
                     return self.ctype_matches_generic(a, b);
                 }
-                // For types that carry identity data (Struct, Union, Enum, Function,
+                (CType::Function(a), CType::Function(b)) => {
+                    return a.is_compatible_with(b, &|x, y| self.ctype_matches_generic(x, y));
+                }
+                // For types that carry identity data (Struct, Union, Enum,
                 // Vector), we must compare the full type, not just the discriminant.
                 // Primitive types (Int, Float, etc.) have no data so PartialEq works too.
                 _ => return controlling == assoc,

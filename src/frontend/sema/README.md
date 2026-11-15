@@ -324,7 +324,8 @@ The checker handles all expression forms in the AST:
 - **Statement expressions** (`({ ... })`): type is the type of the last expression
   statement, with fallback resolution from declarations within the compound.
 - **`_Generic`**: resolves the controlling expression type and matches against
-  the association list.
+  the association list. Function types match after C11 6.7.6.3p15 (see
+  `FunctionType::is_compatible_with`), so parameter names are ignored.
 - **Compound literals**: type from the type specifier.
 - **`VaArg`**: type from the target type specifier.
 - **`LabelAddr`** (`&&label`): always `Pointer(Void)`.
@@ -361,7 +362,7 @@ pub struct SemaConstEval<'a> {
 | `__alignof__(expr)` | Checks for explicit alignment on variable declarations |
 | Ternary `?:` | Evaluates condition, returns selected branch |
 | `GnuConditional` (Elvis `a ?: b`) | Evaluates condition; if nonzero returns condition value, otherwise evaluates else branch |
-| `__builtin_types_compatible_p` | Structural CType comparison |
+| `__builtin_types_compatible_p` | Structural CType comparison; function types are compared by `FunctionType::is_compatible_with` (after C11 6.7.6.3p15) |
 | `offsetof` patterns (`&((T*)0)->member`) | Resolves struct field offsets, handles nested access and array subscripts |
 | Enum constants | Direct `i64` lookup in `TypeContext.enum_constants` |
 | Builtin function calls | Delegates to shared `common::const_eval::eval_builtin_call` |
@@ -632,6 +633,45 @@ own context-specific cases.
   call arguments, and other implicit conversions are not validated. Programs with
   non-pointer/float type errors may pass sema and cause panics or incorrect codegen
   in the lowerer.
+
+- **Function type compatibility inherits the differences of the component
+  types.** `_Generic` and `__builtin_types_compatible_p` compare function types
+  with `FunctionType::is_compatible_with` (return type, variadic flag,
+  parameter count and adjusted parameter types; names ignored). It applies the
+  comparator of its context, sema's or lowering's, to the return type and to
+  each parameter type, and changes nothing about how a non-function type is
+  represented or compared. Existing differences from gcc in component types,
+  in the way a declaration or a `typeof` yields a type, and in the
+  comparators therefore also decide comparisons of function types. For
+  example: `CType` has no qualifiers, so `int(*)(const int *)` and
+  `int(*)(int *)` compare as compatible; enums are compared as `int` by
+  lowering; plain `char` equals `signed char`; a function-pointer parameter
+  written out inside a parameter list (not through a typedef) is read as a
+  pointer to its return type (`int (*cb)(int)` as `int *`). Other differences
+  of the same kind have the same effect.
+
+  `()` and `(void)` are stored alike, as an empty parameter list, and both
+  compare as a prototype with no parameters (the C23 meaning of `()`), so
+  `int(*)(void)` and `int(*)(int)` are incompatible and `int(*)()` is
+  compatible only with `int(*)()` and `int(*)(void)`. The C17 rule for a
+  declarator without a prototype is not implemented; K&R definitions are
+  compared with their parameter types as declared, without the default
+  argument promotions.
+
+  Sema and lowering map some component types differently (for example a
+  typedef of an enum, and a `_Complex` type or an anonymous struct written
+  directly in a type name, which sema reads as `int`), and each decides
+  different contexts, so a function type can compare differently in an enum
+  value than in a function body. With `C` standing for a call of
+  `__builtin_types_compatible_p`, sema's value is used, for example, in
+  `enum { E = C };`, in `int g = C;` at file scope and for `0 + C` in a
+  function body, and lowering's value in `enum { N = sizeof(char[1 + C]) };`
+  and for the condition of `if (C)` in a function body. So two expressions in
+  one function can disagree. In `_Generic`, lowering additionally uses a
+  `const` in the type specifiers of an association (for a function pointer
+  type, in those of its return type, as in `const char *(*)(int)`), so sema
+  and lowering can select different associations, and the matchers let an
+  array decay to a pointer at every nesting level, parameter types included.
 
 - **Incomplete `typeof(expr)` support.** The `ExprTypeChecker` returns `None` for
   expressions it cannot type (complex expression chains through typeof, expressions
