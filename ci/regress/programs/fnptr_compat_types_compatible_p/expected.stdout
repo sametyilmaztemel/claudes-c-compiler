@@ -1,0 +1,23 @@
+ok  int(*)(float, double)              | int(*)(float)
+ok  int(*)(float)                      | int(*)(float)
+ok  int(*)(float)                      | long(*)(float)
+ok  int(*)(float)                      | int(*)(double)
+ok  int(*)(int, ...)                   | int(*)(int)
+ok  int(*)(int, ...)                   | int(*)(int, ...)
+ok  int(*)(int x)                      | int(*)(int y)
+ok  int(*)(const int)                  | int(*)(int)
+ok  int(*)(int[])                      | int(*)(int *)
+ok  int(*)(int(int))                   | int(*)(int(*)(int))
+ok  int(**)(int)                       | int(**)(long)
+ok  int(*)(float)                      | int *
+ok  int(*)[3]                          | int *[3]
+ok  int(*)[3]                          | int(*)[3]
+ok  fn_float_t *                       | pfn_float_t
+ok  fn_float_t *                       | int(*)(float)
+ok  ppfn_float_t                       | int(**)(float)
+ok  ppfn_float_t                       | int(**)(double)
+ok  typeof(handler) *                  | pfn_float_t
+ok  typeof(&handler)                   | typeof(&other)
+ok  int *                              | int *
+ok  int *                              | long *
+failures 0

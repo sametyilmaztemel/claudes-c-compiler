@@ -1,0 +1,7 @@
+array size 3
+open vs long-returning: 0
+ioctl vs fixed: 0
+open vs release: 0
+function vs pointer: 0
+call 98 6
+release 7

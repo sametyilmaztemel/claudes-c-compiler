@@ -28,3 +28,4 @@ four fail on AArch64, and two of them on RISC-V as well.
 | `compound_assign_*` | A signed left operand of a compound assignment is converted by value when the common type is unsigned, as in `x /= sizeof(int)` (IR lowering) | none |
 | `alignof_*` | `_Alignof` and `__alignof__` have type `size_t`, like `sizeof` (IR lowering) | `anthropics/claudes-c-compiler#332`, row 1 |
 | `char_*` | Plain `char` follows the target (unsigned on AArch64 and RISC-V) and `-fsigned-char` / `-funsigned-char`; `signed char` is a distinct type | `anthropics/claudes-c-compiler#332`, row 2 |
+| `fnptr_compat_*` | Function types are compared by C11 6.7.6.3p15 (return type, variadic flag, parameter count and parameter types; names ignored) in `__builtin_types_compatible_p` and `_Generic`, and the type operands of `__builtin_types_compatible_p` and `__builtin_va_arg` are parsed as abstract declarators (parser, sema, IR lowering) | `anthropics/claudes-c-compiler#332`, row 9 |

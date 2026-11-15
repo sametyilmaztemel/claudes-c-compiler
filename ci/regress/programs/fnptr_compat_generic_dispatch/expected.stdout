@@ -1,0 +1,13 @@
+void(int)
+int(int)
+long(int,int)
+double(double,double)
+int(const char*,...)
+int(int)
+void(int)
+long(int,int)
+other
+mask 31
+event 3
+invoke 0 42
+invoke -1

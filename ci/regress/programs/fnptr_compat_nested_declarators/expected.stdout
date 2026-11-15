@@ -1,0 +1,12 @@
+int(*(*)(int))(float)                | int(*(*)(int))(float)                1
+int(*(*)(int))(float)                | int(*(*)(int))(double)               0
+int(*(*)(int))(float)                | int(*(*)(long))(float)               0
+int(*(*)(int))(float)                | long(*(*)(int))(float)               0
+unary_t(*)(int)                      | int(*(*)(int))(float)                1
+unary_t(*)(int)                      | int(*(*)(int))(double)               0
+int(*(**)(int))(float)               | int(*(**)(int))(float)               1
+void(*(*)(void))(void)               | void(*(*)(void))(void)               1
+char *(*(*)(int, ...))(float)        | char *(*(*)(int))(float)             0
+typeof(&pick)                        | int(*(*)(int))(float)                1
+2 3
+8
