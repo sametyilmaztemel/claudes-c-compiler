@@ -645,10 +645,10 @@ own context-specific cases.
   comparators therefore also decide comparisons of function types. For
   example: `CType` has no qualifiers, so `int(*)(const int *)` and
   `int(*)(int *)` compare as compatible; enums are compared as `int` by
-  lowering; plain `char` equals `signed char`; a function-pointer parameter
-  written out inside a parameter list (not through a typedef) is read as a
-  pointer to its return type (`int (*cb)(int)` as `int *`). Other differences
-  of the same kind have the same effect.
+  lowering; a function-pointer parameter written out inside a parameter list
+  (not through a typedef) is read as a pointer to its return type
+  (`int (*cb)(int)` as `int *`). Other differences of the same kind have the
+  same effect.
 
   `()` and `(void)` are stored alike, as an empty parameter list, and both
   compare as a prototype with no parameters (the C23 meaning of `()`), so
